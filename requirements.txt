@@ -1,0 +1,2 @@
+cvxpy
+git+https://github.com/locuslab/mpc.pytorch.git

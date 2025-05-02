@@ -1,0 +1,7 @@
+__pycache__
+*.json
+**/*.pdf
+c_generated_code*
+results
+figures
+!figures/smoothed_solution_sensitivities_horizontal.png
