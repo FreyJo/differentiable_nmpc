@@ -1,6 +1,7 @@
 # Differentiable Nonlinear Model Predictive Control
 
-This repository contains the code to repruduce the results presented in the paper **Differentiable Nonlinear Model Predictive Control**.
+This repository contains the code to reproduce the results presented in the paper **Differentiable Nonlinear Model Predictive Control**.
+A preprint of the paper is available on [arXiv](https://arxiv.org/abs/2505.01353).
 The proposed algorithms are implemented in the [`acados`](https://github.com/acados/acados) software framework.
 
 **Abstract**: The efficient computation of parametric solution sensitivities is a key challenge in the integration of learning-based methods with nonlinear model predictive control (NMPC), as their availability is crucial for many learning algorithms.
@@ -13,7 +14,7 @@ The publication is accompanied by an efficient open-source implementation within
 Using higher log barrier parameters $\tau_\textrm{min}$ for the interior point solver, progressively smoothens the solution map.
 For a more details, we refer to the paper.
 
-## Requirements 
+## Requirements
 
 To reproduce the results in the paper, you will need to setup a python environment and install some dependencies:
 
@@ -38,7 +39,7 @@ The code is tested with `acados` version `v0.5.0`.
 Note: The version used in the paper are: `cvxpy==1.6.4`, `mpc.pytorch==0.0.6`.
 
 ## Running the code
-The results of the paper can be reproduced by running different scripts structured in folders. 
+The results of the paper can be reproduced by running different scripts structured in folders.
 
 - **Table 1**: The folder `benchmark_mpc_pytorch` contains the code to evaluate the performance of `mpc.pytorch` and `acados` in terms of speed. To reproduce the results:
 
