@@ -131,6 +131,7 @@ def solve_using_acados(problem: ControlBoundedLqrProblem, x0_vals,
         u_batch_sol[:, :-1, :] = solver.get_flat('u').reshape((n_batch, N_horizon, nu))
 
         if seed is not None:
+            solver.setup_qp_matrices_and_factorize()
             p_sens_ = solver.eval_adjoint_solution_sensitivity(seed_x=None, seed_u=[(0, seed_u_batch)], sanity_checks=False, )
             du_dp_adj_batch += np.sum(p_sens_, axis=0)
 

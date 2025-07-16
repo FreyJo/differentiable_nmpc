@@ -1,2 +1,4 @@
 cvxpy
+cvxpygen
+cvxpylayers
 git+https://github.com/locuslab/mpc.pytorch.git

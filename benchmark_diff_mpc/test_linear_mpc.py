@@ -1,17 +1,13 @@
-import torch
 import numpy as np
 import numpy.random as npr
 import numpy.testing as npt
 import cvxpy as cp
-import scipy
 
 from timeit import default_timer as timer
 
-from torch.autograd import Variable
-
 from diff_acados import solve_using_acados
 
-from linear_mpc import define_bounded_lqr_test_problem, create_batched_problem_data, TOL, solve_using_mpc_pytorch
+from linear_mpc import define_bounded_lqr_test_problem, create_batched_problem_data, TOL, solve_using_mpc_pytorch, solve_using_cvxpy
 
 
 def bounded_mpytorch_cvxpy(C, c, A, B, b, x0, N_horizon, nx, nu, u_lower, u_upper):
@@ -43,7 +39,7 @@ def bounded_mpytorch_cvxpy(C, c, A, B, b, x0, N_horizon, nx, nu, u_lower, u_uppe
     return np.array(tau.value).T, np.array([obj_t.value for obj_t in objs])
 
 
-def solve_using_cvxpy(H_batch, c_batch, A_batch, B_batch, b_batch, x0, u_lower_batch, u_upper_batch):
+def solve_using_cvxpy_pure(H_batch, c_batch, A_batch, B_batch, b_batch, x0, u_lower_batch, u_upper_batch):
 
     N_horizon, n_batch, nx, nu = B_batch.shape
     x_cp = np.zeros((N_horizon, n_batch, nx))
@@ -61,7 +57,7 @@ def solve_using_cvxpy(H_batch, c_batch, A_batch, B_batch, b_batch, x0, u_lower_b
     return x_cp, u_cp, timing
 
 
-def control_bounded_lqr_test(umax: float = 1.0):
+def control_bounded_lqr_test(umax: float = 1.0, codegen_suff=""):
     npr.seed(42)
     problem = define_bounded_lqr_test_problem(umax=umax)
 
@@ -77,7 +73,7 @@ def control_bounded_lqr_test(umax: float = 1.0):
     H_batch, c_batch, A_batch, B_batch, b_batch, u_lower_batch, u_upper_batch = create_batched_problem_data(problem, n_batch)
 
     # solve using cvxpy
-    x_cp, u_cp, timing_cp = solve_using_cvxpy(H_batch, c_batch, A_batch, B_batch, b_batch, x0, u_lower_batch, u_upper_batch)
+    x_cp, u_cp, timing_cp = solve_using_cvxpy_pure(H_batch, c_batch, A_batch, B_batch, b_batch, x0, u_lower_batch, u_upper_batch)
 
     # solve with acados (batched)
     test_tol_acados = 1e2 * TOL
@@ -85,29 +81,52 @@ def control_bounded_lqr_test(umax: float = 1.0):
     x_ac, u_ac, timing_ac, _ = solve_using_acados(problem, x0, batched=True, num_threads=num_threads)
 
     diff_cp_ac = max(np.max(np.abs([x_ac - x_cp])), np.max(np.abs([u_ac - u_cp])))
-    print(f"difference acados vs cvxpy: {diff_cp_ac:.2e}")
+    print(f"difference acados vs cvxpy (pure): {diff_cp_ac:.2e}")
     npt.assert_allclose(x_ac, x_cp, atol=test_tol_acados)
     npt.assert_allclose(u_ac, u_cp, atol=test_tol_acados)
 
     # solve with acados (sequential) + verify convergence of KKT residuals
     x_ac_seq, u_ac_seq, timing_ac_seq, _ = solve_using_acados(problem, x0, batched=False, verify_kkt_residuals=True)
     diff_cp_ac = max(np.max(np.abs([x_ac_seq - x_cp])), np.max(np.abs([u_ac_seq - u_cp])))
-    print(f"difference acados sequential vs cvxpy: {diff_cp_ac:.2e}")
+    print(f"difference acados sequential vs cvxpy (pure): {diff_cp_ac:.2e}")
     npt.assert_allclose(x_ac_seq, x_cp, atol=test_tol_acados)
     npt.assert_allclose(u_ac_seq, u_cp, atol=test_tol_acados)
-    print("\nacados and cvxpy solutions match as expected.\n")
+    print("\nacados and cvxpy (pure) solutions match as expected.\n")
 
-    # convert to torch
+    # solve using cvxpygen + cvxpylayer
+    x_cpgen, u_cpgen, timing_cpgen, _ = solve_using_cvxpy(
+        H_batch,
+        A_batch,
+        B_batch,
+        b_batch,
+        x0,
+        u_lower_batch,
+        u_upper_batch,
+        codegen_suff=codegen_suff,
+    )
+
     TEST_TOL = 1e3 * TOL
-    H_batch, c_batch, A_batch, B_batch, b_batch, x0, u_lower_batch, u_upper_batch = [
-        Variable(torch.Tensor(x).double()) if x is not None else None
-        for x in [H_batch, c_batch, A_batch, B_batch, b_batch, x0, u_lower_batch, u_upper_batch]
-    ]
+    print(f"Timings: {timing_ac=}, {timing_cpgen=}")
+    diff_cp_cvxpy = max(np.max(np.abs([x_cpgen - x_cp])), np.max(np.abs([u_cpgen - u_cp])))
+    x_mask = np.abs(x_cpgen - x_cp) > TEST_TOL
+    num_x_diff = np.sum(x_mask)
+    u_mask = np.abs(u_cpgen - u_cp) > TEST_TOL
+    num_u_diff = np.sum(u_mask)
+    num_elements_exceeding_tol = num_x_diff + num_u_diff
+    total_elements = np.prod(x_cp.shape) + np.prod(u_cp.shape)
+    percentage_exceeding_tol = (num_elements_exceeding_tol / total_elements) * 100
+    print(f"difference cvxpy (gen + layers) vs cvxpy (pure): {diff_cp_cvxpy:.2e}")
+    print(
+        f"Percentage of elements with difference > TEST_TOL: {percentage_exceeding_tol:.2f}%"
+    )
+
+    if diff_cp_cvxpy < TEST_TOL:
+        print("\ncvxpy (gen + layers) and cvxpy (pure) solutions match as expected.\n")
+    else:
+        raise Exception("cvxpy (gen + layers) should converge for this problem.")
 
     # solve using MPC class of mpc.pytorch
     x_mpytorch, u_mpytorch, timing_mpytorch, _ = solve_using_mpc_pytorch(nx, nu, N_horizon, n_batch, H_batch, c_batch, A_batch, B_batch, b_batch, x0, u_lower_batch, u_upper_batch)
-    x_mpytorch = x_mpytorch.detach().numpy()
-    u_mpytorch = u_mpytorch.detach().numpy()
 
     print(f"Timings: {timing_ac=}, {timing_mpytorch=}")
 
@@ -115,11 +134,11 @@ def control_bounded_lqr_test(umax: float = 1.0):
     num_elements_exceeding_tol = np.sum(np.abs(x_mpytorch - x_cp) > TEST_TOL) + np.sum(np.abs(u_mpytorch - u_cp) > TEST_TOL)
     total_elements = np.prod(x_cp.shape) + np.prod(u_cp.shape)
     percentage_exceeding_tol = (num_elements_exceeding_tol / total_elements) * 100
-    print(f"difference mpc.pytorch vs cvxpy: {diff_cp_mpytorch:.2e}")
+    print(f"difference mpc.pytorch vs cvxpy (pure): {diff_cp_mpytorch:.2e}")
     print(f"Percentage of elements with difference > TEST_TOL: {percentage_exceeding_tol:.2f}%")
 
     if diff_cp_mpytorch < TEST_TOL:
-        print("\nmpc.pytorch and cvxpy solutions match as expected, for problems without active constraints.\n")
+        print("\nmpc.pytorch and cvxpy (pure) solutions match as expected, for problems without active constraints.\n")
     else:
         print("\nmpc.pytorch DID NOT CONVERGE to correct solution.")
         if umax < 1e3:
@@ -129,7 +148,7 @@ def control_bounded_lqr_test(umax: float = 1.0):
 
 
 
-def control_bounded_lqr_sens_test(umax: float = 1.0):
+def control_bounded_lqr_sens_test(umax: float = 1.0, codegen_suff=""):
     npr.seed(42)
     problem = define_bounded_lqr_test_problem(umax=umax)
 
@@ -152,39 +171,38 @@ def control_bounded_lqr_sens_test(umax: float = 1.0):
     # create batched problem data
     H_batch, c_batch, A_batch, B_batch, b_batch, u_lower_batch, u_upper_batch = create_batched_problem_data(problem, n_batch)
 
-    # convert to torch
-    H_batch, c_batch, A_batch, B_batch, b_batch, x0, u_lower_batch, u_upper_batch = [
-        Variable(torch.Tensor(x).double()) if x is not None else None
-        for x in [H_batch, c_batch, A_batch, B_batch, b_batch, x0, u_lower_batch, u_upper_batch]
-    ]
+    # solve using cvxpy (gen + layer)
+    x_cvxpygen, u_cvxpygen, timing_cxvxpygen, adj_sens_cvxpy = solve_using_cvxpy(
+        H_batch,
+        A_batch,
+        B_batch,
+        b_batch,
+        x0,
+        u_lower_batch,
+        u_upper_batch,
+        seed=seed,
+        codegen_suff=codegen_suff,
+    )
 
-    # convert to torch
-    H_batch, c_batch, A_batch, B_batch, b_batch, x0, u_lower_batch, u_upper_batch = [
-        Variable(torch.Tensor(x).double()) if x is not None else None
-        for x in [H_batch, c_batch, A_batch, B_batch, b_batch, x0, u_lower_batch, u_upper_batch]
-    ]
-    # NOTE: compute gradients w.r.t. A, B, b, H
-    c_batch = torch.tensor(np.concatenate([problem.cost.q, problem.cost.r]), requires_grad=False)
-    A_batch = torch.tensor(problem.dynamics.A, requires_grad=True)
-    B_batch = torch.tensor(problem.dynamics.B, requires_grad=True)
-    b_batch = torch.tensor(problem.dynamics.b, requires_grad=True)
-    H_batch = torch.tensor(scipy.linalg.block_diag(problem.cost.Q, problem.cost.R), requires_grad=True)
+    print(f"Timings: {timing_ac=}, {timing_cxvxpygen=}")
+    npt.assert_allclose(adj_sens_ac, adj_sens_cvxpy, atol=test_tol)
+    print("Adjoint sensitivities of acados and cvxpy (gen + layer) match!")
 
-    # solve using MPC class of mpc.pytorch
-    x_mpytorch, u_mpytorch, timing_mpytorch, adj_sens_mpytorch = solve_using_mpc_pytorch(nx, nu, N_horizon, n_batch, H_batch, c_batch, A_batch, B_batch, b_batch, x0, u_lower_batch, u_upper_batch, seed=seed)
-    x_mpytorch = x_mpytorch.detach().numpy()
-    u_mpytorch = u_mpytorch.detach().numpy()
-
-    print(f"Timings: {timing_ac=}, {timing_mpytorch=}")
-    npt.assert_allclose(adj_sens_ac, adj_sens_mpytorch, atol=test_tol)
-    print(f"Adjoint sensitivities of acados and mpc.pytorch match!")
-
+    if umax == 1e4:
+        # solve using MPC class of mpc.pytorch
+        x_mpytorch, u_mpytorch, timing_mpytorch, adj_sens_mpytorch = solve_using_mpc_pytorch(nx, nu, N_horizon, n_batch, H_batch, c_batch, A_batch, B_batch, b_batch, x0, u_lower_batch, u_upper_batch, seed=seed)
+        
+        print(f"Timings: {timing_ac=}, {timing_mpytorch=}")
+        npt.assert_allclose(adj_sens_ac, adj_sens_mpytorch, atol=test_tol)
+        print(f"Adjoint sensitivities of acados and mpc.pytorch match!")
 
 
 def main():
-    control_bounded_lqr_test(umax=1e4)
-    control_bounded_lqr_test(umax=1.0)
-    control_bounded_lqr_sens_test(umax=1e4)
+    control_bounded_lqr_test(umax=1e4, codegen_suff="one")
+    control_bounded_lqr_sens_test(umax=1e4, codegen_suff="one")
+
+    control_bounded_lqr_test(umax=1.0, codegen_suff="two")
+    control_bounded_lqr_sens_test(umax=1.0, codegen_suff="two")
 
 if __name__ == "__main__":
     main()
