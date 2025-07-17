@@ -106,8 +106,8 @@ def solve_using_cvxpy(
         b_single.requires_grad = True
         H_single.requires_grad = True
 
-    x_cp_tch = torch.zeros((N_horizon, n_batch, nx))
-    u_cp_tch = torch.zeros((N_horizon, n_batch, nu))
+    x_cp_tch = torch.zeros((N_horizon, n_batch, nx), dtype=torch.float64)
+    u_cp_tch = torch.zeros((N_horizon, n_batch, nu), dtype=torch.float64)
 
     tau = cp.Variable((nx + nu, N_horizon), name="tau")
     A = cp.Parameter((nx, nx), name="A")
@@ -584,11 +584,11 @@ def evaluate_experiment_latex(cuda: bool = False):
         nx = configs[0][1]
         nu = configs[0][2]
         table_string += f", $n_x \!=\! {nx}$, $n_u \!=\! {nu}$, $n_\\theta" + f" \!= \!{nx*(nx+nu+1)+(nx+nu)**2}$"
-    table_string += r". Given in [ms] or in multiples of the \acados{} runtime.\n"
+    table_string += r". Given in [ms] for \acados{} and in multiples of the \acados{} runtime for the others."
 
     table_string += r"\label{tab:mcp_pytorch}" + "\n"
     table_string += "}\n"
-    table_string += "\\vspace{-3mm}\n"
+    table_string += "\\vspace{-1.5mm}\n"
     table_string += "\\footnotesize\n"
     table_string += r"\begin{tabular}{ccccccc}" + "\n"
     table_string += r"\toprule" + "\n"
@@ -752,8 +752,7 @@ def evaluate_experiment_markdown(cuda: bool = False):
         print(f"Written to {name}")
 
 
-def analyze_constraint_activeness_in_results():
-    config = PROBLEM_CONFIGS[1]
+def analyze_constraint_activeness_in_results(config):
     umax, nx, nu, _ = config
     n_batch = N_BATCH_EXPERIMENT
     results_acados = load_results_maybe("acados", umax, nx, nu, n_batch, N_HORIZON, sensitivity=False)
@@ -769,6 +768,33 @@ def analyze_constraint_activeness_in_results():
         print(f"u_lb_active: {u_lb_active}, u_bu_active: {u_bu_active}")
         print(f"total active bounds: {u_lb_active + u_bu_active}")
         print(f"ratio of active constraints {100 * (u_lb_active + u_bu_active) / u_sol.size :.3f} %")
+
+
+def compare_results_u(config):
+    umax, nx, nu, _ = config
+    n_batch = N_BATCH_EXPERIMENT
+    solver_names = ["acados", "mpc_pytorch", "cvxpy"]
+    u_sol_list = []
+    for solver in solver_names:
+        results = load_results_maybe(solver, umax, nx, nu, n_batch, N_HORIZON, sensitivity=False)
+        if results is None:
+            raise Exception(f"Results for {solver} not found.")
+        u_sol_list.append(results['u'])
+
+    u_sol_ref = u_sol_list[0]
+
+    for i, u_sol in enumerate(u_sol_list[1:], start=1):
+        diff = np.abs(u_sol - u_sol_ref)
+        # breakpoint()
+        max_diff = np.max(diff)
+        mean_diff = np.mean(diff)
+        print(f"Comparing {solver_names[0]} with {solver_names[i]}:")
+        print(f"Difference between {solver_names[0]} and {solver_names[i]}:")
+        print(f"Max difference: {max_diff:.4f}, Mean difference: {mean_diff:.4f}")
+        if max_diff > TOL*1e2:
+            print("Differences are significant, results may not be consistent.")
+        else:
+            print("Results are consistent within numerical precision.")
 
 
 if __name__ == "__main__":
@@ -789,4 +815,7 @@ if __name__ == "__main__":
     evaluate_experiment_latex(cuda=cuda)
     evaluate_experiment_markdown(cuda=cuda)
 
-    analyze_constraint_activeness_in_results()
+    analyze_constraint_activeness_in_results(PROBLEM_CONFIGS[0])
+    analyze_constraint_activeness_in_results(PROBLEM_CONFIGS[1])
+    compare_results_u(PROBLEM_CONFIGS[0])
+    compare_results_u(PROBLEM_CONFIGS[1])
