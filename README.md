@@ -29,7 +29,7 @@ To reproduce the results in the paper, you will need to setup a python environme
 2. Install `acados` by following the instructions in the [acados installation guide](https://docs.acados.org/installation/index.html).
 Add the CMake options `-DACADOS_WITH_OPENMP=ON -DACADOS_NUM_THREADS=1` to ensure acados is compiled with OpenMP and parallelization within a solve is not done, such that parallelization over the batch size can be used, which is most efficient.
 Also ensure that you install the [python interface](https://docs.acados.org/python_interface/index.html).
-The code is tested with `acados` version `v0.5.0`.
+The code is tested with `acados` version `v0.5.1`.
 
 3. Install the python dependencies containing also `mpc.pytorch`, `cvxpy`, `cvxpygen` and `cvxpylayers` by
     ```
@@ -62,8 +62,8 @@ To reproduce the results run the following scripts from the `benchmark_diff_mpc`
 
 | $u_{\mathrm{max}}$ | `acados` (Nominal) | `mpc.pytorch` (Nominal) | `cvxpygen` (Nominal) | `acados` (Adjoint Sens.) | `mpc.pytorch` (Adjoint Sens.) | `cvxpygen` (Adjoint Sens.) |
 |---------------|------------------|-----------------------|-------------------|-------------------------|--------------------------|-------------------------|
-| $10^4$ | 7.6 | 9.22 | 42.6 | 36.6 | 3.23 | 17.1 |
-| $1.0$ | 17.4 | 1.46e+03 | 118 | 58.4 | 441 | 26.3 |
+| $10^4$ | 8.3 | 8.49 | 37.7 | 33.1 | 3.85 | 19 |
+| $1.0$ | 12.2 | 2.1e+03 | 158 | 41.4 | 616 | 37.8 |
 
 
 
