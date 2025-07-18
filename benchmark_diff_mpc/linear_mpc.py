@@ -143,7 +143,6 @@ def solve_using_cvxpy(
         "eps_rel": TOL,
         "max_iter": 100000,
     }
-    solver_args["updated_params"] = ["A", "B", "b", "C_sqrt", "x_init"]
 
     codegen_mod_name = "lmpc_convex_codegen" + codegen_suff
     cpg.generate_code(
@@ -168,8 +167,15 @@ def solve_using_cvxpy(
 
     C_sqrt_single = torch.linalg.cholesky(H_single, upper=True)
 
+    all_params = ["A", "B", "b", "C_sqrt", "x_init"]
+    only_x = ["x_init"]
+
     time_start = timer()
     for i in range(n_batch):
+        if i == 0:
+            solver_args["updated_params"] = all_params
+        else:
+            solver_args["updated_params"] = only_x
         (tau,) = layer(
             A_single,
             B_single,
