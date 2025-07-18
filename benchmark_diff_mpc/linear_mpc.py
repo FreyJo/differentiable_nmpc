@@ -292,7 +292,7 @@ def solve_using_mpc_pytorch(nx, nu, N_horizon, n_batch, H_batch, c_batch, A_batc
     return x_mpytorch, u_mpytorch, timing, du_dp_adj
 
 
-def control_bounded_lqr_solve_and_adj_sens_timings(problem: ControlBoundedLqrProblem, n_batch=2**12, with_mpc_pytorch = False, with_mpc_pytorch_cuda = False, with_cvxpy = False, with_cvxpy_cuda = False, num_threads=None, codegen_suff=""):
+def control_bounded_lqr_solve_and_adj_sens_timings(problem: ControlBoundedLqrProblem, x0, with_mpc_pytorch = False, with_mpc_pytorch_cuda = False, with_cvxpy = False, with_cvxpy_cuda = False, num_threads=None, codegen_suff=""):
     if with_mpc_pytorch_cuda:
         assert with_mpc_pytorch
     if with_cvxpy_cuda:
@@ -310,7 +310,7 @@ def control_bounded_lqr_solve_and_adj_sens_timings(problem: ControlBoundedLqrPro
     seed = np.ones((nu,))
 
     # dimensions
-    x0 = npr.randn(n_batch, nx)
+    n_batch = x0.shape[0]
 
     # solve with acados
     if with_acados:
@@ -459,7 +459,7 @@ def get_num_threads_from_multiprocessing():
     num_threads = multiprocessing.cpu_count()
     return num_threads
 
-def control_bounded_lqr_solve_timings(problem: ControlBoundedLqrProblem, n_batch=2**12, with_mpc_pytorch = True, with_mpc_pytorch_cuda = True, with_cvxpy=True, with_cvxpy_cuda=True, with_acados = True, num_threads=None, codegen_suff=""):
+def control_bounded_lqr_solve_timings(problem: ControlBoundedLqrProblem, x0, with_mpc_pytorch = True, with_mpc_pytorch_cuda = True, with_cvxpy=True, with_cvxpy_cuda=True, with_acados = True, num_threads=None, codegen_suff=""):
     if with_mpc_pytorch_cuda:
         assert with_mpc_pytorch
 
@@ -472,7 +472,7 @@ def control_bounded_lqr_solve_timings(problem: ControlBoundedLqrProblem, n_batch
     umax = problem.control_bounds.u_upper[0]
 
     # dimensions
-    x0 = npr.randn(n_batch, nx)
+    n_batch = x0.shape[0]
 
     # solve with acados
     if with_acados:
@@ -571,9 +571,10 @@ def main_experiment(with_mpc_pytorch=True, with_mpc_pytorch_cuda=True, with_cvxp
         num_threads = get_num_threads_from_multiprocessing()
 
     for umax, nx, nu, codegen_suff in PROBLEM_CONFIGS:
+        x0 = npr.randn(n_batch, nx)
         problem = define_bounded_lqr_test_problem(umax=umax, nx=nx, nu=nu)
-        control_bounded_lqr_solve_timings(problem, n_batch=n_batch, with_mpc_pytorch=with_mpc_pytorch, with_mpc_pytorch_cuda=with_mpc_pytorch_cuda, with_cvxpy=with_cvxpy, with_cvxpy_cuda=with_cvxpy_cuda, num_threads=num_threads, codegen_suff=codegen_suff)
-        control_bounded_lqr_solve_and_adj_sens_timings(problem, n_batch=n_batch, with_mpc_pytorch=with_mpc_pytorch, with_mpc_pytorch_cuda=with_mpc_pytorch_cuda, with_cvxpy=with_cvxpy, with_cvxpy_cuda=with_cvxpy_cuda, num_threads=num_threads, codegen_suff=codegen_suff)
+        control_bounded_lqr_solve_timings(problem, x0=x0, with_mpc_pytorch=with_mpc_pytorch, with_mpc_pytorch_cuda=with_mpc_pytorch_cuda, with_cvxpy=with_cvxpy, with_cvxpy_cuda=with_cvxpy_cuda, num_threads=num_threads, codegen_suff=codegen_suff)
+        control_bounded_lqr_solve_and_adj_sens_timings(problem, x0=x0, with_mpc_pytorch=with_mpc_pytorch, with_mpc_pytorch_cuda=with_mpc_pytorch_cuda, with_cvxpy=with_cvxpy, with_cvxpy_cuda=with_cvxpy_cuda, num_threads=num_threads, codegen_suff=codegen_suff)
 
 def evaluate_experiment_latex(cuda: bool = False):
     n_batch = N_BATCH_EXPERIMENT
