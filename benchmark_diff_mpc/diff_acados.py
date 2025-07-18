@@ -92,6 +92,8 @@ def solve_using_acados(problem: ControlBoundedLqrProblem, x0_vals,
             # set initial state
             solver.set(0, 'lbx', x0_vals[i,:])
             solver.set(0, 'ubx', x0_vals[i,:])
+            # NOTE: Not necessary, but for fairness of comparison we are setting the parameters again
+            solver.set_p_global_and_precompute_dependencies(ocp.p_global_values)
             # solve
             solver.solve()
             # get solution
@@ -126,6 +128,7 @@ def solve_using_acados(problem: ControlBoundedLqrProblem, x0_vals,
             solver.ocp_solvers[j].set(0, 'ubx', x0_vals[j,:])
 
         # set parameters
+        # NOTE: Not necessary, but for fairness of comparison we are setting the parameters again
         for j in range(n_batch):
             solver.ocp_solvers[j].set_p_global_and_precompute_dependencies(ocp.p_global_values)
 
