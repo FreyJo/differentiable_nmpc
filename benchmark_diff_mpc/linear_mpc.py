@@ -770,29 +770,33 @@ def analyze_constraint_activeness_in_results(config):
         print(f"ratio of active constraints {100 * (u_lb_active + u_bu_active) / u_sol.size :.3f} %")
 
 
-def compare_results_u(config):
+def compare_results_xu(config):
     umax, nx, nu, _ = config
     n_batch = N_BATCH_EXPERIMENT
     solver_names = ["acados", "mpc_pytorch", "cvxpy"]
     u_sol_list = []
+    x_sol_list = []
     for solver in solver_names:
         results = load_results_maybe(solver, umax, nx, nu, n_batch, N_HORIZON, sensitivity=False)
         if results is None:
             raise Exception(f"Results for {solver} not found.")
         u_sol_list.append(results['u'])
+        x_sol_list.append(results['x'])
 
     u_sol_ref = u_sol_list[0]
+    x_sol_ref = x_sol_list[0]
 
-    for i, u_sol in enumerate(u_sol_list[1:], start=1):
-        diff = np.abs(u_sol - u_sol_ref)
-        # breakpoint()
-        max_diff = np.max(diff)
-        mean_diff = np.mean(diff)
-        print(f"Comparing {solver_names[0]} with {solver_names[i]}:")
-        print(f"Difference between {solver_names[0]} and {solver_names[i]}:")
-        print(f"Max difference: {max_diff:.4f}, Mean difference: {mean_diff:.4f}")
-        if max_diff > TOL*1e2:
-            print("Differences are significant, results may not be consistent.")
+    for i in range(1, len(u_sol_list)):
+        diff_u = np.abs(u_sol_list[i] - u_sol_ref)
+        diff_x = np.abs(x_sol_list[i] - x_sol_ref)
+        max_diff_u = np.max(diff_u)
+        mean_diff_u = np.mean(diff_u)
+        max_diff_x = np.max(diff_x)
+        mean_diff_x = np.mean(diff_x)
+        print(f"\nComparing {solver_names[0]} with {solver_names[i]}:")
+        print(f"Diff x: max {max_diff_x:.4f}, mean: {mean_diff_x:.4f}, diff u: max {max_diff_u:.4f}, mean: {mean_diff_u:.4f}")
+        if max_diff_x > TOL*1e2 or max_diff_u > TOL*1e2:
+            print("Results are NOT consistent.")
         else:
             print("Results are consistent within numerical precision.")
 
@@ -817,5 +821,5 @@ if __name__ == "__main__":
 
     analyze_constraint_activeness_in_results(PROBLEM_CONFIGS[0])
     analyze_constraint_activeness_in_results(PROBLEM_CONFIGS[1])
-    compare_results_u(PROBLEM_CONFIGS[0])
-    compare_results_u(PROBLEM_CONFIGS[1])
+    compare_results_xu(PROBLEM_CONFIGS[0])
+    compare_results_xu(PROBLEM_CONFIGS[1])
