@@ -738,6 +738,10 @@ def evaluate_experiment_markdown(cuda: bool = False):
         timing_mpytorch_sens = results_mpytorch_sens['timing'] if results_mpytorch_sens else float('nan')
         timing_cpgen_sens = results_cpgen_sens['timing'] if results_cpgen_sens else float('nan')
 
+        print("\nTimings for umax =", umax)
+        print(f"Nominal: timings in ms: acados: {timing_ac_nom*1e3:.2f}, mpc.pytorch: {timing_mpytorch_nom*1e3:.2f}, cvxpygen: {timing_cpgen_nom*1e3:.2f}")
+        print(f"Sensitivity: timings in ms: acados: {timing_ac_sens*1e3:.2f}, mpc.pytorch: {timing_mpytorch_sens*1e3:.2f}, cvxpygen: {timing_cpgen_sens*1e3:.2f}")
+
         # Speedup calculation: mpc.pytorch / acados
         speedup_mpytorch_sens = timing_mpytorch_sens / timing_ac_sens
         speedup_cpgen_sens = timing_cpgen_sens / timing_ac_sens
