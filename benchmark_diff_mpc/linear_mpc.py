@@ -626,10 +626,13 @@ def evaluate_experiment_latex(cuda: bool = False):
         table_string += "$"
         if nxu_varies:
             table_string += f", $n_x = {nx}$, $n_u= {nu}$"
-        speedup_str = f"{timing_mpytorch/timing_ac:.3g}"
-        if "e+03" in speedup_str:
-            speedup_str = f"{int(float(speedup_str))}"
-        table_string += f"& {timing_ac*1e3:.1f} & $\\times{speedup_str}$ & $\\times${timing_cpgen/timing_ac:.3g}"
+        speedup_str_pytorch = f"{timing_mpytorch/timing_ac:.2g}"
+        if "e+0" in speedup_str_pytorch:
+            speedup_str_pytorch = f"{int(float(speedup_str_pytorch))}"
+        speedup_str_cpgen = f"{timing_cpgen/timing_ac:.2g}"
+        if "e+0" in speedup_str_cpgen:
+            speedup_str_cpgen = f"{int(float(speedup_str_cpgen))}"
+        table_string += f"& {timing_ac*1e3:.1f} & $\\times{speedup_str_pytorch}$ & $\\times{speedup_str_cpgen}$"
 
         # timings sensitivity
         results_acados = load_results_maybe("acados", umax, nx, nu, n_batch, N_HORIZON, sensitivity=True)
@@ -640,15 +643,20 @@ def evaluate_experiment_latex(cuda: bool = False):
         else:
             results_mpytorch = load_results_maybe("mpc_pytorch_cuda", umax, nx, nu, n_batch, N_HORIZON, sensitivity=True)
             results_cpgen = load_results_maybe("cvxpy_cuda", umax, nx, nu, n_batch, N_HORIZON, sensitivity=True)
+
         timing_cpgen = results_cpgen['timing']
+        speedup_str_cpgen = f"{timing_cpgen/timing_ac:.2g}"
+        if "e+0" in speedup_str_cpgen:
+            speedup_str_cpgen = f"{int(float(speedup_str_cpgen))}"
+
         if results_mpytorch is None:
-            table_string += f" & {timing_ac*1e3:.1f} & - & $\\times${timing_cpgen/timing_ac:.3g} \\\\\n"
+            table_string += f" & {timing_ac*1e3:.1f} & - & $\\times{speedup_str_cpgen}$ \\\\\n"
         else:
             timing_mpytorch = results_mpytorch['timing']
-            speedup_str = f"{timing_mpytorch/timing_ac:.3g}"
-            if "e+03" in speedup_str:
-                speedup_str = f"{int(float(speedup_str))}"
-            table_string += f" & {timing_ac*1e3:.1f} & $\\times{speedup_str}$ & $\\times${timing_cpgen/timing_ac:.3g}"
+            speedup_str_pytorch = f"{timing_mpytorch/timing_ac:.2g}"
+            if "e+0" in speedup_str_pytorch:
+                speedup_str_pytorch = f"{int(float(speedup_str_pytorch))}"
+            table_string += f" & {timing_ac*1e3:.1f} & $\\times{speedup_str_pytorch}$ & $\\times{speedup_str_cpgen}$"
         table_string += "\\\\\n"
 
     table_string += r"\bottomrule" + "\n"
@@ -723,8 +731,8 @@ def evaluate_experiment_markdown(cuda: bool = False):
         speedup_cpgen_nom = timing_cpgen_nom / timing_ac_nom
 
         row_parts.extend([f"{timing_ac_nom*1e3:.1f}" if not math.isnan(timing_ac_nom) else "-",
-                          f"{speedup_mpytorch_nom:.3g}" if not math.isnan(speedup_mpytorch_nom) else "-",
-                          f"{speedup_cpgen_nom:.3g}" if not math.isnan(speedup_cpgen_nom) else "-"])
+                          f"{speedup_mpytorch_nom:.2g}" if not math.isnan(speedup_mpytorch_nom) else "-",
+                          f"{speedup_cpgen_nom:.2g}" if not math.isnan(speedup_cpgen_nom) else "-"])
 
 
         # --- Timings: solution + adjoint sensitivity ---
@@ -748,8 +756,8 @@ def evaluate_experiment_markdown(cuda: bool = False):
         speedup_cpgen_sens = timing_cpgen_sens / timing_ac_sens
 
         row_parts.extend([f"{timing_ac_sens*1e3:.1f}" if not math.isnan(timing_ac_sens) else "-",
-                          f"{speedup_mpytorch_sens:.3g}" if not math.isnan(speedup_mpytorch_sens) else "-",
-                          f"{speedup_cpgen_sens:.3g}" if not math.isnan(speedup_cpgen_sens) else "-"])
+                          f"{speedup_mpytorch_sens:.2g}" if not math.isnan(speedup_mpytorch_sens) else "-",
+                          f"{speedup_cpgen_sens:.2g}" if not math.isnan(speedup_cpgen_sens) else "-"])
 
 
         # --- Append Row to Table String ---
