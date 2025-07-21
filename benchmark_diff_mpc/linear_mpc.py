@@ -96,7 +96,7 @@ def solve_using_cvxpy(
         )
 
     (H_single, A_single, B_single, b_single, x0) = [
-        torch.Tensor(x).double().to(device)
+        torch.Tensor(x).double().detach().to(device)
         for x in [H_single, A_single, B_single, b_single, x0]
     ]
     
@@ -243,7 +243,7 @@ def solve_using_mpc_pytorch(nx, nu, N_horizon, n_batch, H_batch, c_batch, A_batc
 
     # convert to torch
     H_batch, c_batch, A_batch, B_batch, b_batch, x0, lbu, ubu = [
-        torch.Tensor(x).double().to(device)
+        torch.Tensor(x).double().detach().to(device)
         for x in [H_batch, c_batch, A_batch, B_batch, b_batch, x0, lbu, ubu]
     ]
     
