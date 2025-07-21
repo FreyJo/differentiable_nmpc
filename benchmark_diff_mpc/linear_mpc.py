@@ -264,8 +264,6 @@ def solve_using_mpc_pytorch(nx, nu, N_horizon, n_batch, H_batch, c_batch, A_batc
         n_batch=n_batch,
     )
 
-    x_mpytorch_, u_mpytorch_, objs_mpytorch = mpc_pytorch_solver(x0, quad_cost, dynamics)
-
     time_start = timer()
     x_mpytorch_, u_mpytorch_, objs_mpytorch = mpc_pytorch_solver(x0, quad_cost, dynamics)
     x_mpytorch = util.get_data_maybe(x_mpytorch_)
