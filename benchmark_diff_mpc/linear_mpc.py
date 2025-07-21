@@ -577,6 +577,13 @@ def main_experiment(with_mpc_pytorch=True, with_mpc_pytorch_cuda=True, with_cvxp
         control_bounded_lqr_solve_timings(problem, x0=x0, with_mpc_pytorch=with_mpc_pytorch, with_mpc_pytorch_cuda=with_mpc_pytorch_cuda, with_cvxpy=with_cvxpy, with_cvxpy_cuda=with_cvxpy_cuda, num_threads=num_threads, codegen_suff=codegen_suff)
         control_bounded_lqr_solve_and_adj_sens_timings(problem, x0=x0, with_mpc_pytorch=with_mpc_pytorch, with_mpc_pytorch_cuda=with_mpc_pytorch_cuda, with_cvxpy=with_cvxpy, with_cvxpy_cuda=with_cvxpy_cuda, num_threads=num_threads, codegen_suff=codegen_suff)
 
+def speedup_formatter(timing, baseline):
+    string = f"{timing/baseline:.2g}"
+    if "e+0" in string:
+        string = f"{int(float(string))}"
+    string = f"$\\times{string}$"
+    return string
+
 def evaluate_experiment_latex(cuda: bool = False):
     n_batch = N_BATCH_EXPERIMENT
     configs = PROBLEM_CONFIGS
@@ -587,12 +594,12 @@ def evaluate_experiment_latex(cuda: bool = False):
 
     table_string = r"\begin{table*}"
     table_string += "\n\centering\n"
-    table_string += "\caption{Timings for solving $n_{\mathrm{batch}} \!=\! " + f"{n_batch}$ bounded LQR problems with $N \!=\! {N_HORIZON}$"
+    table_string += "\caption{Timings in [ms] for solving $n_{\mathrm{batch}} \!=\! " + f"{n_batch}$ bounded LQR problems with $N \!=\! {N_HORIZON}$"
     if not nxu_varies:
         nx = configs[0][1]
         nu = configs[0][2]
         table_string += f", $n_x \!=\! {nx}$, $n_u \!=\! {nu}$, $n_\\theta" + f" \!= \!{nx*(nx+nu+1)+(nx+nu)**2}$"
-    table_string += r". Given in [ms] for \acados{} and in multiples of the \acados{} runtime for the others."
+    table_string += r". In parenthesis in multiples the \acados{} runtime for the others."
 
     table_string += r"\label{tab:mcp_pytorch}" + "\n"
     table_string += "}\n"
@@ -626,13 +633,7 @@ def evaluate_experiment_latex(cuda: bool = False):
         table_string += "$"
         if nxu_varies:
             table_string += f", $n_x = {nx}$, $n_u= {nu}$"
-        speedup_str_pytorch = f"{timing_mpytorch/timing_ac:.2g}"
-        if "e+0" in speedup_str_pytorch:
-            speedup_str_pytorch = f"{int(float(speedup_str_pytorch))}"
-        speedup_str_cpgen = f"{timing_cpgen/timing_ac:.2g}"
-        if "e+0" in speedup_str_cpgen:
-            speedup_str_cpgen = f"{int(float(speedup_str_cpgen))}"
-        table_string += f"& {timing_ac*1e3:.1f} & $\\times{speedup_str_pytorch}$ & $\\times{speedup_str_cpgen}$"
+        table_string += f"& {timing_ac*1e3:.1f} & ${int(timing_mpytorch*1e3)} \;\,$ ({speedup_formatter(timing_mpytorch, timing_ac)}) & ${int(timing_cpgen*1e3)} \;\,$ ({speedup_formatter(timing_cpgen, timing_ac)})"
 
         # timings sensitivity
         results_acados = load_results_maybe("acados", umax, nx, nu, n_batch, N_HORIZON, sensitivity=True)
@@ -645,18 +646,11 @@ def evaluate_experiment_latex(cuda: bool = False):
             results_cpgen = load_results_maybe("cvxpy_cuda", umax, nx, nu, n_batch, N_HORIZON, sensitivity=True)
 
         timing_cpgen = results_cpgen['timing']
-        speedup_str_cpgen = f"{timing_cpgen/timing_ac:.2g}"
-        if "e+0" in speedup_str_cpgen:
-            speedup_str_cpgen = f"{int(float(speedup_str_cpgen))}"
+        timing_mpytorch = results_mpytorch['timing']
+        # table_string += f"& {timing_ac*1e3:.1f} & {speedup_formatter(timing_mpytorch, timing_ac)} & {speedup_formatter(timing_cpgen, timing_ac)}"
+        table_string += f"& {timing_ac*1e3:.1f} & ${int(timing_mpytorch*1e3)} \;\,$ ({speedup_formatter(timing_mpytorch, timing_ac)}) & ${int(timing_cpgen*1e3)} \;\,$ ({speedup_formatter(timing_cpgen, timing_ac)})"
 
-        if results_mpytorch is None:
-            table_string += f" & {timing_ac*1e3:.1f} & - & $\\times{speedup_str_cpgen}$ \\\\\n"
-        else:
-            timing_mpytorch = results_mpytorch['timing']
-            speedup_str_pytorch = f"{timing_mpytorch/timing_ac:.2g}"
-            if "e+0" in speedup_str_pytorch:
-                speedup_str_pytorch = f"{int(float(speedup_str_pytorch))}"
-            table_string += f" & {timing_ac*1e3:.1f} & $\\times{speedup_str_pytorch}$ & $\\times{speedup_str_cpgen}$"
+
         table_string += "\\\\\n"
 
     table_string += r"\bottomrule" + "\n"
