@@ -569,7 +569,10 @@ def main_experiment(with_mpc_pytorch=True, with_mpc_pytorch_cuda=True, with_cvxp
         num_threads = get_num_threads_from_multiprocessing()
 
     for umax, nx, nu, codegen_suff in PROBLEM_CONFIGS:
-        x0 = npr.randn(n_batch, nx)
+        # x0 = npr.randn(n_batch, nx)
+        # load x0 from file to get timings consistent with initial submission.
+        # NOTE: for new sampled x0, mpc.pytorch is roughly 2x slower.
+        x0 = np.load("x0_initial_submission.npy")
         problem = define_bounded_lqr_test_problem(umax=umax, nx=nx, nu=nu)
         control_bounded_lqr_solve_timings(problem, x0=x0, with_mpc_pytorch=with_mpc_pytorch, with_mpc_pytorch_cuda=with_mpc_pytorch_cuda, with_cvxpy=with_cvxpy, with_cvxpy_cuda=with_cvxpy_cuda, num_threads=num_threads, codegen_suff=codegen_suff)
         control_bounded_lqr_solve_and_adj_sens_timings(problem, x0=x0, with_mpc_pytorch=with_mpc_pytorch, with_mpc_pytorch_cuda=with_mpc_pytorch_cuda, with_cvxpy=with_cvxpy, with_cvxpy_cuda=with_cvxpy_cuda, num_threads=num_threads, codegen_suff=codegen_suff)
