@@ -29,6 +29,7 @@ def export_parametric_ocp() -> AcadosOcp:
     ocp.solver_options.with_solution_sens_wrt_params = True
     ocp.solver_options.with_value_sens_wrt_params = True
     ocp.solver_options.nlp_solver_ext_qp_res = 1
+    ocp.solver_options.qp_solver_cond_ric_alg = 0
 
     return ocp
 
@@ -59,6 +60,7 @@ def solve_and_compute_sens(p_test, tau):
             # breakpoint()
 
         # Calculate the policy gradient
+        status = ocp_solver.setup_qp_matrices_and_factorize()
         out_dict = ocp_solver.eval_solution_sensitivity(0, "p_global", return_sens_x=True, return_sens_u=False)
         sens_x[i] = out_dict['sens_x'].item()
 
