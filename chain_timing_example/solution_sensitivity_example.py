@@ -629,7 +629,7 @@ def load_results_plot_timings(
         figure_filename=figure_filename,
         t_max=10,
         horizontal=True,
-        figsize=(7, 3),
+        figsize=(6.6, 3.),
         with_patterns=True,
         ncol=1,
     )

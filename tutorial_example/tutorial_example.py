@@ -112,7 +112,7 @@ def plot_solution_sensitivities_results(p_test, sol_list, sens_list, labels_list
     if horizontal_plot:
         _, ax = plt.subplots(nrows=1, ncols=nsub, sharex=False, figsize=(12, 2.8))
     else:
-        _, ax = plt.subplots(nrows=nsub, ncols=1, sharex=True, figsize=(6.5,5))
+        _, ax = plt.subplots(nrows=nsub, ncols=1, sharex=True, figsize=(6.5, 3.8))
 
     isub = 0
     # plot analytic solution
