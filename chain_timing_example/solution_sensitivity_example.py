@@ -608,19 +608,30 @@ def load_results_plot_timings(
 ):
     figure_filename = args.path / f"timing_adj_fwd_sens_chain.{args.type}"
 
-    # Load timing data again
+    # load
     with open(timing_data_file, "rb") as f:
         loaded_timing_data = pickle.load(f)
 
-    # Use loaded data for plotting
+    # plot
+    # settings for wide plot in paper
+    # plot_timings(
+    #     loaded_timing_data["timings_list"],
+    #     loaded_timing_data["labels"],
+    #     figure_filename=figure_filename,
+    #     t_max=10,
+    #     horizontal=True,
+    #     figsize=(12, 2.9),
+    #     with_patterns=True,
+    # )
     plot_timings(
         loaded_timing_data["timings_list"],
         loaded_timing_data["labels"],
         figure_filename=figure_filename,
         t_max=10,
         horizontal=True,
-        figsize=(12, 2.9),
+        figsize=(7, 3),
         with_patterns=True,
+        ncol=1,
     )
 
 
@@ -651,4 +662,5 @@ if __name__ == "__main__":
 
     chain_params = get_chain_params()
     chain_params["n_mass"] = 3
-    main_parametric(args, qp_solver_ric_alg=0, chain_params_=chain_params, generate_code=True)
+    # main_parametric(args, qp_solver_ric_alg=0, chain_params_=chain_params, generate_code=True)
+    load_results_plot_timings(args)

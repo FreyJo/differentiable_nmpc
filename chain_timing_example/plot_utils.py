@@ -36,7 +36,7 @@ from acados_template import latexify_plot
 latexify_plot()
 
 
-def plot_timings(results_list, labels, figure_filename=None, t_max=None, horizontal=False, figsize=None, with_patterns=False):
+def plot_timings(results_list, labels, figure_filename=None, t_max=None, horizontal=False, figsize=None, with_patterns=False, ncol=2):
     num_entries = len(labels)
     if num_entries != len(results_list):
         raise ValueError("Number of labels and result files do not match")
@@ -79,7 +79,7 @@ def plot_timings(results_list, labels, figure_filename=None, t_max=None, horizon
 
         plt.grid(axis="x")
         plt.xlabel("mean computation time [ms]")
-        ax.legend(ncol=2)
+        ax.legend(ncol=ncol)
 
     # tight layout
     plt.tight_layout()
