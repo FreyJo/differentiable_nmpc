@@ -46,6 +46,7 @@ from utils import get_chain_params
 from typing import Tuple
 from plot_utils import plot_timings
 import time
+import pickle
 
 
 def export_discrete_erk4_integrator_step(f_expl: SX, x: SX, u: SX, p: ssymStruct, h: float, n_stages: int = 2) -> ca.SX:
@@ -350,7 +351,11 @@ def export_parametric_ocp(
     return ocp, p
 
 
-def main_parametric(args, qp_solver_ric_alg: int = 0, chain_params_: dict = get_chain_params(), generate_code: bool = True) -> None:
+def main_parametric(args, qp_solver_ric_alg: int = 0,
+                    chain_params_: dict = get_chain_params(),
+                    generate_code: bool = True,
+                    timing_data_file: str = "timing_data.pkl",
+                    ) -> None:
     ocp, parameter_values = export_parametric_ocp(
         chain_params_=chain_params_, qp_solver_ric_alg=qp_solver_ric_alg, integrator_type="DISCRETE",
     )
@@ -437,6 +442,9 @@ def main_parametric(args, qp_solver_ric_alg: int = 0, chain_params_: dict = get_
                 seed_ustage[ii][j, j+offset] = 1
         zip_stages_x = list(zip(stages_x, seed_xstage))
         zip_stages_u = list(zip(stages_u, seed_ustage))
+    else:
+        timings_solve_params_adj_all_primals = None
+        timings_solve_params_adj_uforw = None
 
     seed_x = np.ones((nx, 1))
     seed_u = np.ones((nu, 1))
@@ -581,8 +589,39 @@ def main_parametric(args, qp_solver_ric_alg: int = 0, chain_params_: dict = get_
 
     # compare timings
     figure_filename = args.path / f"timing_adj_fwd_sens_chain.{args.type}"
-    plot_timings(timings_list, labels, figure_filename=figure_filename, t_max=10, horizontal=True, figsize=(12, 2.9), with_patterns=True)
-    plt.show()
+
+    # Store everything needed for plot_timings in a file
+    timing_data = {
+        "timings_list": timings_list,
+        "labels": labels,
+    }
+    with open(timing_data_file, "wb") as f:
+        pickle.dump(timing_data, f)
+
+    load_results_plot_timings(args, timing_data_file)
+
+
+
+def load_results_plot_timings(
+    args,
+    timing_data_file: str = "timing_data.pkl",
+):
+    figure_filename = args.path / f"timing_adj_fwd_sens_chain.{args.type}"
+
+    # Load timing data again
+    with open(timing_data_file, "rb") as f:
+        loaded_timing_data = pickle.load(f)
+
+    # Use loaded data for plotting
+    plot_timings(
+        loaded_timing_data["timings_list"],
+        loaded_timing_data["labels"],
+        figure_filename=figure_filename,
+        t_max=10,
+        horizontal=True,
+        figsize=(12, 2.9),
+        with_patterns=True,
+    )
 
 
 def print_timings(timing_results: dict, metric: str = "median"):
