@@ -1,6 +1,6 @@
 # Differentiable Nonlinear Model Predictive Control
 
-This repository contains the code to repruduce the results presented in the paper **Differentiable Nonlinear Model Predictive Control**.
+This repository contains the code to reproduce the results presented in the paper **Differentiable Nonlinear Model Predictive Control**.
 The proposed algorithms are implemented in the [`acados`](https://github.com/acados/acados) software framework.
 
 **Abstract**: The efficient computation of parametric solution sensitivities is a key challenge in the integration of learning-based methods with nonlinear model predictive control (NMPC), as their availability is crucial for many learning algorithms.
@@ -11,11 +11,11 @@ The publication is accompanied by an efficient open-source implementation within
 **Visualization:** Figure 2 of the paper, visualizing the optimization landscape at active set changes of the solution map of an optimal control problem (OCP) as solved in the context of NMPC:
 ![Smoothed Solution Sensitivities](./figures/smoothed_solution_sensitivities_horizontal.png)
 Using higher log barrier parameters $\tau_\textrm{min}$ for the interior point solver, progressively smoothens the solution map.
-For a more details, we refer to the paper.
+For more details, we refer to the paper.
 
 ## Requirements
 
-To reproduce the results in the paper, you will need to setup a python environment and install some dependencies:
+To reproduce the results in the paper, you will need to set up a python environment and install some dependencies:
 
 1. Setup a virtual python environment e.g. using `conda`:
     ```
@@ -44,10 +44,10 @@ The results of the paper can be reproduced by running different scripts structur
 To reproduce the results run the following scripts from the `benchmark_diff_mpc` folder:
 
     1. Run `test_linear_mpc.py` to verify the following:
-        - for `umax = 1e4`: acados, cvxpy and mpc.pytorch converge to the same solution
-        - for `umax = 1e4`: the adjoint solution sensitivities obtained with acados, mpc.pytorch and cvxpygen match
-        - for `umax = 1.0`: mpc.pytorch fails to converge for this strictly convex QP
-        - for `umax = 1.0`: the adjoint solution sensitivities obtained with acados and cvxpygen match
+        - for `umax = 1e4`: `acados`, `cvxpy` and `mpc.pytorch` converge to the same solution
+        - for `umax = 1e4`: the adjoint solution sensitivities obtained with `acados`, `mpc.pytorch` and `cvxpygen` match
+        - for `umax = 1.0`: `mpc.pytorch` fails to converge for this strictly convex QP
+        - for `umax = 1.0`: the adjoint solution sensitivities obtained with `acados` and `cvxpygen` match
     2. Run `linear_mpc.py` to reproduce the benchmark results in Table 1 from our paper.
         - Note: set `num_threads` to the number of physical cores of your CPU to get the best performance with `acados`.
 
