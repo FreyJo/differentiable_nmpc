@@ -35,7 +35,7 @@ from acados_template import AcadosOcpSolver
 from sensitivity_utils import plot_smoothed_solution_sensitivities_results, export_parametric_ocp, plot_pendulum
 
 
-with_parametric_constraint = True
+with_parametric_constraint = False
 with_nonlinear_constraint = False
 
 N_horizon = 50
@@ -52,9 +52,8 @@ def solve_ocp_and_compute_sens(ocp_solver: AcadosOcpSolver, sensitivity_solver: 
     sens_u = np.zeros(np_test)
     u_opt = np.zeros(np_test)
 
-    if with_parametric_constraint:
-        n_lam_total = ocp_solver.get_flat('lam').shape[0]
-        lambda_flat = np.zeros((np_test, n_lam_total))
+    n_lam_total = ocp_solver.get_flat('lam').shape[0]
+    lambda_flat = np.zeros((np_test, n_lam_total))
 
     for i, p in enumerate(p_test):
         p_val = np.array([p])
@@ -63,7 +62,6 @@ def solve_ocp_and_compute_sens(ocp_solver: AcadosOcpSolver, sensitivity_solver: 
         sensitivity_solver.set_p_global_and_precompute_dependencies(p_val)
         u_opt[i] = ocp_solver.solve_for_x0(x0, fail_on_nonzero_status=False)[0]
         status = ocp_solver.get_status()
-        # ocp_solver.print_statistics()
         if status != 0:
             ocp_solver.print_statistics()
             print(f"Solver failed with status {status} for {i}th parameter value {p} and {tau_min=}.")
@@ -92,7 +90,7 @@ def solve_ocp_and_compute_sens(ocp_solver: AcadosOcpSolver, sensitivity_solver: 
 
 def create_solvers(x0, use_cython=False, qp_solver_ric_alg=0,
                     verbose = True, build = True, generate = True):
-    ocp = export_parametric_ocp(x0=x0, N_horizon=N_horizon, T_horizon=T_horizon, Fmax=Fmax, qp_solver_ric_alg=1, with_parametric_constraint=with_parametric_constraint, with_nonlinear_constraint=with_nonlinear_constraint)
+    ocp = export_parametric_ocp(x0=x0, N_horizon=N_horizon, T_horizon=T_horizon, Fmax=Fmax, qp_solver_ric_alg=1)
 
     # create nominal solver
     if use_cython:
@@ -103,7 +101,7 @@ def create_solvers(x0, use_cython=False, qp_solver_ric_alg=0,
         ocp_solver = AcadosOcpSolver(ocp, build=build, generate=generate, json_file="parameter_augmented_acados_ocp.json", verbose=verbose)
 
     # create sensitivity solver
-    ocp = export_parametric_ocp(x0=x0, N_horizon=N_horizon, T_horizon=T_horizon, Fmax=Fmax, hessian_approx='EXACT', qp_solver_ric_alg=qp_solver_ric_alg, with_parametric_constraint=with_parametric_constraint, with_nonlinear_constraint=with_nonlinear_constraint)
+    ocp = export_parametric_ocp(x0=x0, N_horizon=N_horizon, T_horizon=T_horizon, Fmax=Fmax, hessian_approx='EXACT', qp_solver_ric_alg=qp_solver_ric_alg)
     ocp.model.name = 'sensitivity_solver'
     ocp.code_export_directory = f'c_generated_code_{ocp.model.name}'
     if use_cython:
@@ -121,14 +119,13 @@ def main_parametric(args, qp_solver_ric_alg: int, use_cython=False, plot_traject
     Evaluate policy and calculate its gradient for the pendulum on a cart with a parametric model.
     """
 
-    x0 = np.array([0.0, np.pi / 2, 0.0, 0.0])
-    delta_p = 0.001
+    x0 = np.array([0.0, np.pi / 2, -3.0, 0.0])
+    delta_p = 0.005
     # p_nominal = 1.0
     # p_test = np.arange(p_nominal + 0.1, p_nominal + 0.5, delta_p)
-    p_test = np.arange(1.05, 1.4+delta_p, delta_p)
+    p_test = np.arange(0.25-delta_p, 2.0+delta_p, delta_p)
 
-    ocp_solver, sensitivity_solver = create_solvers(x0, use_cython=use_cython, qp_solver_ric_alg=qp_solver_ric_alg,) # verbose=False, build=False, generate=False)
-    ocp = ocp_solver.acados_ocp
+    ocp_solver, sensitivity_solver = create_solvers(x0, use_cython=use_cython, qp_solver_ric_alg=qp_solver_ric_alg, verbose=False, build=False, generate=False)
 
     # compute policy and its gradient
     u_opt, sens_u, lambda_flat = solve_ocp_and_compute_sens(ocp_solver, sensitivity_solver, p_test, x0, tau_min=0.0)
@@ -147,60 +144,26 @@ def main_parametric(args, qp_solver_ric_alg: int, use_cython=False, plot_traject
     # test: check median since derivative cannot be compared at active set changes
     assert median_diff <= test_tol
 
-    # for multiplier plot
-    n_lam_total = ocp_solver.get_flat('lam').shape[0]
-    multipliers_bu = []
-    multipliers_h = []
-    nbu = ocp.dims.nbu
-    nx = ocp.dims.nx
-    x0_lam_idx = [*range(nbu, nx+nbu)] + [*range(2*nbu+nx, 2*nx+2*nbu)]
-    n_lam_0 = ocp_solver.get(0, "lam").shape[0]
-    bu_lam_idx = [*range(n_lam_0, n_lam_total, 2)]
-    h_lam_idx = [*range(n_lam_0+1, n_lam_total, 2)]
-
-    for i in range(n_lam_total):
-        if np.max(np.abs(lambda_flat[:, i])) > 1e-2 and i not in x0_lam_idx:
-            if i in bu_lam_idx:
-                multipliers_bu += [lambda_flat[:, i]]
-            elif i in h_lam_idx:
-                multipliers_h += [lambda_flat[:, i]]
-            else:
-                print(f"found multiplier with index {i} that is not in x0_lam_idx, bu_lam_idx or h_lam_idx.")
-            print(f"Multiplier {i} has non-zero values.")
-    print(f"Multipliers with absolute value > 1e-2: bu {len(multipliers_bu)}, h {len(multipliers_h)}")
-
     # solutions to plot
-    label = r'$\tau_{\mathrm{min}} = 0$'
+    label = r'IFT with exact Hessian'
     pi_label_pairs = []
     sens_pi_label_pairs = []
 
     pi_label_pairs.append((u_opt, label))
     sens_pi_label_pairs.append((sens_u, label))
-
-    for tau_min in [1e-3, 1e-2]:
-        u_opt, sens_u, _ = solve_ocp_and_compute_sens(ocp_solver, sensitivity_solver, p_test, x0, tau_min=tau_min)
-        label = r'$\tau_{\mathrm{min}} = 10^{' + f"{int(np.log10(tau_min))}" + r"}$"
-        pi_label_pairs.append((u_opt, label))
-        sens_pi_label_pairs.append((sens_u, label))
-
-    sens_pi_label_pairs.append((sens_u_fd, 'finite diff.'))
+    sens_pi_label_pairs.append((sens_u_fd, 'finite differences'))
 
     # without 2-solver approach
     tau_min = 1e-6
     u_opt, sens_u, _ = solve_ocp_and_compute_sens(ocp_solver, ocp_solver, p_test, x0, tau_min=tau_min, sanity_checks=False)
-    label = r"IFT approx. Hess."
+    label = r"IFT with Gauss-Newtion Hessian approximation"
     # pi_label_pairs.append((u_opt, label))
     sens_pi_label_pairs.append((sens_u, label))
 
     # plot
-    # plot_smoothed_solution_sensitivities_results(p_test, pi_label_pairs, sens_pi_label_pairs, title=None, parameter_name=r"$\theta$",
-    #              multipliers_bu=multipliers_bu, multipliers_h=multipliers_h,
-    #              figsize=(7, 9),
-    #              fig_filename="smoothed_solution_sensitivities.pdf",
-    #              )
     fig_filename = args.path / f"smoothed_solution_sensitivities_horizontal.{args.type}"
     plot_smoothed_solution_sensitivities_results(p_test, pi_label_pairs, sens_pi_label_pairs, title=None, parameter_name=r"$\theta$",
-                multipliers_bu=multipliers_bu, multipliers_h=multipliers_h,
+                multipliers_bu=None, multipliers_h=None,
                 figsize=(13.6, 3.5),
                 fig_filename=fig_filename,
                 horizontal_plot=True,
