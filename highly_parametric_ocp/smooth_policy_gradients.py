@@ -156,7 +156,7 @@ def main_parametric(args, qp_solver_ric_alg: int, use_cython=False, plot_traject
     # without 2-solver approach
     tau_min = 1e-6
     u_opt, sens_u, _ = solve_ocp_and_compute_sens(ocp_solver, ocp_solver, p_test, x0, tau_min=tau_min, sanity_checks=False)
-    label = r"IFT with Gauss-Newtion Hessian approximation"
+    label = r"IFT with Gauss-Newton Hessian approximation"
     # pi_label_pairs.append((u_opt, label))
     sens_pi_label_pairs.append((sens_u, label))
 
