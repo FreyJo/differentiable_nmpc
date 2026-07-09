@@ -254,11 +254,11 @@ def plot_solution_sensitivities_results(p_test, pi, pi_reconstructed_acados, pi_
     ax[isub].plot(p_test, sens_u, label="acados")
     ax[isub].plot(p_test, np_grad, "--", label="finite diff.")
     ax[isub].set_xlim([p_test[0], p_test[-1]])
-    ax[isub].set_ylabel(r"$\partial_\theta u_0$")
+    ax[isub].set_ylabel(f"$\\partial_{parameter_name.replace('$', '')} u_0$")
 
     isub += 1
     ax[isub].plot(p_test, np.abs(sens_u- np_grad), "--", label='acados - finite diff.')
-    ax[isub].set_ylabel(r"difference $\partial_\theta u_0$")
+    ax[isub].set_ylabel(f"difference $\\partial_{parameter_name.replace('$', '')} u_0$")
     ax[isub].set_yscale("log")
 
     if with_multiplier_subplot:
@@ -348,7 +348,7 @@ def plot_smoothed_solution_sensitivities_results(p_test, pi_label_pairs, sens_pi
     isub += 1
     for i, (sens_pi, label) in enumerate(sens_pi_label_pairs):
         ax[isub].plot(p_test, sens_pi, label=label, linestyle=linestyles[i])
-    ax[isub].set_ylabel(r"$\partial_\theta u_0^\star$")
+    ax[isub].set_ylabel(f"$\\partial_{parameter_name.replace('$', '')} u_0^\\star$")
     if horizontal_plot:
         ax[isub].legend(loc = 'upper left', handlelength=1.2, ncol=2, columnspacing=0.5, labelspacing=0.2)
     else:
