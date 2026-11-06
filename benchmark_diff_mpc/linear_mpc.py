@@ -617,7 +617,7 @@ def control_bounded_lqr_solve_timings(problem: ControlBoundedLqrProblem, x0, wit
 
 N_BATCH_EXPERIMENT = 2**7
 
-BIG_PROBLEM_CONFIGS = [
+PROBLEM_CONFIGS = [
     (1e4, 8, 4, 20, 1e-6, "default"),
     (1e0, 8, 4, 20, 1e-6, "umax"),
     (1e4, 8, 4, 100, 1e-6, "N_horizon_big"),
@@ -627,7 +627,7 @@ BIG_PROBLEM_CONFIGS = [
     # (1e4, 32, 16, 20, 1e-6, "high_dim_very"),
 ]
 
-RUN_CONFIGS = BIG_PROBLEM_CONFIGS
+RUN_CONFIGS = PROBLEM_CONFIGS
 
 def main_experiment(with_acados=True, with_mpc_pytorch=True, with_mpc_pytorch_cuda=True, with_cvxpy=True, with_cvxpy_cuda=True, num_threads=None, n_exec=1):
     if num_threads is None:
@@ -757,7 +757,7 @@ def evaluate_experiment_markdown(cuda: bool = False):
     table_string = ""
 
     # --- Generate caption ---
-    caption_base = f"Timings for solving $n_{{\\mathrm{{batch}}}} = {n_batch}$ bounded LQR problems with varying parameters. In the config column, the difference to the default configuration is shown. In parentheses are multiples of the `acados` runtime."
+    caption_base = f"Timings for solving $n_{{\\mathrm{{batch}}}} = {n_batch}$ bounded LQR problems with varying parameters and defaults $N=20$, $n_x=8$, $n_u=$ and $n_\\theta = n_x^2+n_xn_u + n_x + (n_x+n_u)^2$. In the config column, the difference to the default configuration is shown. In parentheses are multiples of the `acados` runtime."
     table_string += f"**Table:** {caption_base}\n\n"
 
     # --- Generate Table Header ---
@@ -812,7 +812,7 @@ def evaluate_experiment_markdown(cuda: bool = False):
         timing_mpytorch_nom = results_mpytorch_nom['timing'] if results_mpytorch_nom else float('nan')
         timing_cpgen_nom = results_cpgen_nom['timing'] if results_cpgen_nom else float('nan')
 
-        row_parts.extend([f"{int(timing_ac_nom*1e3)}" if not math.isnan(timing_ac_nom) else "-",
+        row_parts.extend([f"{timing_ac_nom*1e3:.1f}" if not math.isnan(timing_ac_nom) else "-",
                           f"{int(timing_mpytorch_nom*1e3)} ({speedup_formatter(timing_mpytorch_nom, timing_ac_nom)})" if not math.isnan(timing_mpytorch_nom) else "-",
                           f"{int(timing_cpgen_nom*1e3)} ({speedup_formatter(timing_cpgen_nom, timing_ac_nom)})" if not math.isnan(timing_cpgen_nom) else "-"])
 
@@ -832,7 +832,7 @@ def evaluate_experiment_markdown(cuda: bool = False):
         print(f"Nominal: timings in ms: acados: {timing_ac_nom*1e3:.2f}, mpc.pytorch: {timing_mpytorch_nom*1e3:.2f}, cvxpygen: {timing_cpgen_nom*1e3:.2f}")
         print(f"Sensitivity: timings in ms: acados: {timing_ac_sens*1e3:.2f}, mpc.pytorch: {timing_mpytorch_sens*1e3:.2f}, cvxpygen: {timing_cpgen_sens*1e3:.2f}")
 
-        row_parts.extend([f"{int(timing_ac_sens*1e3)}" if not math.isnan(timing_ac_sens) else "-",
+        row_parts.extend([f"{timing_ac_sens*1e3:.1f}" if not math.isnan(timing_ac_sens) else "-",
                           f"{int(timing_mpytorch_sens*1e3)} ({speedup_formatter(timing_mpytorch_sens, timing_ac_sens)})" if not math.isnan(timing_mpytorch_sens) else "-",
                           f"{int(timing_cpgen_sens*1e3)} ({speedup_formatter(timing_cpgen_sens, timing_ac_sens)})" if not math.isnan(timing_cpgen_sens) else "-"])
 
