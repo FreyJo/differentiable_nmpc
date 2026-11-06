@@ -5,7 +5,8 @@ The proposed algorithms are implemented in the [`acados`](https://github.com/aca
 
 **Abstract**: The efficient computation of parametric solution sensitivities is a key challenge in the integration of learning-based methods with nonlinear model predictive control (NMPC), as their availability is crucial for many learning algorithms.
 While approaches presented in the machine learning community are limited to convex or unconstrained formulations, this paper discusses the computation of solution sensitivities of general nonlinear programs (NLPs) using the implicit function theorem (IFT) and smoothed optimality conditions treated in interior point methods (IPM).
-We detail sensitivity computation within a sequential quadratic programming (SQP) method which employs an IPM for the quadratic subproblems.
+We introduce sequential barrier quadratic programming (SBQP), which generalizes SQP with an IPM quadratic programming (QP) solver by allowing the barrier parameter to approach a prescribed nonnegative target value, recovering classical SQP when this target is zero.
+Previous works are limited to convex or unconstrained formulations, or lack an implementation for efficient sensitivity evaluation.
 The publication is accompanied by an efficient open-source implementation within the $\texttt{acados}$ framework, providing both forward and adjoint sensitivities for general optimal control problems, achieving speedups exceeding 3x over the state-of-the-art solver $\texttt{mpc.pytorch}$.
 
 **Visualization:** Figure 2 of the paper, visualizing the optimization landscape at active set changes of the solution map of an optimal control problem (OCP) as solved in the context of NMPC:
@@ -29,7 +30,7 @@ To reproduce the results in the paper, you will need to set up a python environm
 2. Install `acados` by following the instructions in the [acados installation guide](https://docs.acados.org/installation/index.html).
 Add the CMake options `-DACADOS_WITH_OPENMP=ON -DACADOS_NUM_THREADS=1` to ensure acados is compiled with OpenMP and parallelization within a solve is not done, such that parallelization over the batch size can be used, which is most efficient.
 Also ensure that you install the [python interface](https://docs.acados.org/python_interface/index.html).
-The code is tested with `acados` version `v0.5.1`.
+The code is tested with `acados` version `v0.6.0`.
 
 3. Install the python dependencies containing also `mpc.pytorch`, `cvxpy`, `cvxpygen` and `cvxpylayers` by
     ```
@@ -58,15 +59,18 @@ To reproduce the results run the following scripts from the `benchmark_diff_mpc`
 
 
 ## Benchmark Results
-**Table:** Timings for solving $n_{\mathrm{batch}} = 128$ bounded LQR problems with $N = 20$, $n_x = 8$, $n_u = 4$, $n_\theta = 248$. Given in [ms] for `acados` and in multiples of the `acados` runtime for the others.
+**Table:** Timings for solving $n_{\mathrm{batch}} = 128$ bounded LQR problems with varying parameters and defaults $N=20$, $n_x=8$, $n_u=$ and $n_\theta = n_\theta = n_x^2+n_xn_u + n_x + (n_x+n_u)^2$. In the config column, the difference to the default configuration is shown. In parentheses are multiples of the `acados` runtime.
 
-| $u_{\mathrm{max}}$ | `acados` (Nominal) | `mpc.pytorch` (Nominal) | `cvxpygen` (Nominal) | `acados` (Adjoint Sens.) | `mpc.pytorch` (Adjoint Sens.) | `cvxpygen` (Adjoint Sens.) |
-|---------------|------------------|-----------------------|-------------------|-------------------------|--------------------------|-------------------------|
-| $10^4$ | 8.3 | 8.49 | 37.7 | 33.1 | 3.85 | 19 |
-| $1.0$ | 12.2 | 2.1e+03 | 158 | 41.4 | 616 | 37.8 |
+| config | `acados` (Nominal) | `mpc.pytorch` (Nominal) | `cvxpygen` (Nominal) | `acados` (Nominal + Adjoint Sens.) | `mpc.pytorch` (Nominal + Adjoint Sens.) | `cvxpygen` (Nominal + Adjoint Sens.) |
+|-----------------|-------------------|------------------------|---------------------|-------------------------------|----------------------------------|-----------------------------------|
+| default | 8.6 | 59 ($\times6.9$) | 235 ($\times27$) | 21.0 | 102 ($\times4.9$) | 329 ($\times16$) |
+| $u_{\max} = 1$ | 15.7 | 1697 ($\times110$) | 1140 ($\times73$) | 23.4 | 1793 ($\times77$) | 1239 ($\times53$) |
+| $N = 100$ | 29.3 | 671 ($\times23$) | 925 ($\times32$) | 68.2 | 828 ($\times12$) | 2268 ($\times33$) |
+| $n_x = 16$, $n_u = 8$ | 19.7 | 89 ($\times4.5$) | 585 ($\times30$) | 40.7 | 153 ($\times3.8$) | 856 ($\times21$) |
+
 
 
 
 #### Notes on the benchmark:
 - Naturally, the timing results can only be reproduced qualitatively, because timings depend on the compute architecture, the operating system, and the system load.
-- The experiments in the paper were run with up to 4 threads on a Lenovo ThinkPad T490s with an Intel® Core™ i7-8665U CPU and 16GB of RAM running Ubuntu 22.04.
+- The experiments in the paper were run with up to 4 threads on a Lenovo ThinkPad T490s with an Intel® Core™ i7-8665U CPU and 32GB of RAM running Ubuntu 22.04.

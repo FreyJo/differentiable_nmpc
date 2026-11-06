@@ -7,8 +7,9 @@ from timeit import default_timer as timer
 
 from diff_acados import solve_using_acados
 
-from linear_mpc import define_bounded_lqr_test_problem, create_batched_problem_data, TOL, solve_using_mpc_pytorch, solve_using_cvxpy
+from linear_mpc import define_bounded_lqr_test_problem, create_batched_problem_data, solve_using_mpc_pytorch, solve_using_cvxpy
 
+TOL = 1e-6
 
 def bounded_mpytorch_cvxpy(C, c, A, B, b, x0, N_horizon, nx, nu, u_lower, u_upper):
     """Solve min_{tau={x,u}} sum_t 0.5 tau_t^T C_t tau_t + c_t^T tau_t
@@ -59,7 +60,7 @@ def solve_using_cvxpy_pure(H_batch, c_batch, A_batch, B_batch, b_batch, x0, u_lo
 
 def control_bounded_lqr_test(umax: float = 1.0, codegen_suff=""):
     npr.seed(42)
-    problem = define_bounded_lqr_test_problem(umax=umax)
+    problem = define_bounded_lqr_test_problem(umax=umax, tol=TOL)
 
     # get dimensions
     N_horizon = problem.N_horizon
@@ -102,6 +103,8 @@ def control_bounded_lqr_test(umax: float = 1.0, codegen_suff=""):
         x0,
         u_lower_batch,
         u_upper_batch,
+        N=N_horizon,
+        tol=TOL,
         codegen_suff=codegen_suff,
     )
 
@@ -126,7 +129,7 @@ def control_bounded_lqr_test(umax: float = 1.0, codegen_suff=""):
         raise Exception("cvxpy (gen + layers) should converge for this problem.")
 
     # solve using MPC class of mpc.pytorch
-    x_mpytorch, u_mpytorch, timing_mpytorch, _ = solve_using_mpc_pytorch(nx, nu, N_horizon, n_batch, H_batch, c_batch, A_batch, B_batch, b_batch, x0, u_lower_batch, u_upper_batch)
+    x_mpytorch, u_mpytorch, timing_mpytorch, _ = solve_using_mpc_pytorch(nx, nu, N_horizon, n_batch, H_batch, c_batch, A_batch, B_batch, b_batch, x0, u_lower_batch, u_upper_batch, TOL)
 
     print(f"Timings: {timing_ac=}, {timing_mpytorch=}")
 
@@ -150,7 +153,7 @@ def control_bounded_lqr_test(umax: float = 1.0, codegen_suff=""):
 
 def control_bounded_lqr_sens_test(umax: float = 1.0, codegen_suff=""):
     npr.seed(42)
-    problem = define_bounded_lqr_test_problem(umax=umax)
+    problem = define_bounded_lqr_test_problem(umax=umax, tol=TOL)
 
     # get dimensions
     N_horizon = problem.N_horizon
@@ -180,6 +183,8 @@ def control_bounded_lqr_sens_test(umax: float = 1.0, codegen_suff=""):
         x0,
         u_lower_batch,
         u_upper_batch,
+        N=N_horizon,
+        tol=TOL,
         seed=seed,
         codegen_suff=codegen_suff,
     )
@@ -190,8 +195,8 @@ def control_bounded_lqr_sens_test(umax: float = 1.0, codegen_suff=""):
 
     if umax == 1e4:
         # solve using MPC class of mpc.pytorch
-        x_mpytorch, u_mpytorch, timing_mpytorch, adj_sens_mpytorch = solve_using_mpc_pytorch(nx, nu, N_horizon, n_batch, H_batch, c_batch, A_batch, B_batch, b_batch, x0, u_lower_batch, u_upper_batch, seed=seed)
-        
+        x_mpytorch, u_mpytorch, timing_mpytorch, adj_sens_mpytorch = solve_using_mpc_pytorch(nx, nu, N_horizon, n_batch, H_batch, c_batch, A_batch, B_batch, b_batch, x0, u_lower_batch, u_upper_batch, TOL, seed=seed)
+
         print(f"Timings: {timing_ac=}, {timing_mpytorch=}")
         npt.assert_allclose(adj_sens_ac, adj_sens_mpytorch, atol=test_tol)
         print(f"Adjoint sensitivities of acados and mpc.pytorch match!")

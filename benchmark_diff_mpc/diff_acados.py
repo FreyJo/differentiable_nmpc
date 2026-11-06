@@ -10,35 +10,38 @@ from timeit import default_timer as timer
 
 from problems import ControlBoundedLqrProblem
 
-def casadi_flatten(x: ca.SX) -> ca.SX:
+def casadi_flatten(x: ca.MX) -> ca.MX:
     s = x.shape
     return x.reshape((s[0]*s[1], 1))
 
 def solve_using_acados(problem: ControlBoundedLqrProblem, x0_vals,
                        seed: Optional[np.ndarray]=None, batched=False,
                        verify_kkt_residuals=False, vebose_solver_creation=False,
-                       num_threads=None):
+                       num_threads=None, n_exec=1):
 
     if verify_kkt_residuals and batched:
         raise NotImplementedError("verify_kkt_residuals not implemented for batched solve.")
     if batched and num_threads is None:
         raise Exception("num_threads should be specified when using batched solve.")
+    if n_exec < 1:
+        raise ValueError("n_exec must be at least 1.")
 
     nx, nu = problem.nx, problem.nu
     nxu = nx + nu
     N_horizon = problem.N_horizon
+    tol = problem.tol
 
     ocp = AcadosOcp()
 
     # model & dynamics
     model: AcadosModel = ocp.model
-    model.x = ca.SX.sym('x', nx)
-    model.u = ca.SX.sym('u', nu)
+    model.x = ca.MX.sym('x', nx)
+    model.u = ca.MX.sym('u', nu)
     model.name = 'linear_mpc'
 
-    A_mat = ca.SX.sym('A', nx, nx)
-    B_mat = ca.SX.sym('B', nx, nu)
-    b = ca.SX.sym('b', nx)
+    A_mat = ca.MX.sym('A', nx, nx)
+    B_mat = ca.MX.sym('B', nx, nu)
+    b = ca.MX.sym('b', nx)
     model.p_global = ca.vertcat(*[casadi_flatten(x) for x in [A_mat, B_mat, b]])
     ocp.p_global_values = np.concatenate((problem.dynamics.A.flatten(order='F'), problem.dynamics.B.flatten(order='F'), problem.dynamics.b))
 
@@ -48,7 +51,7 @@ def solve_using_acados(problem: ControlBoundedLqrProblem, x0_vals,
     # define cost
     ocp.cost.cost_type = 'EXTERNAL'  # NOTE: if no sensitivities are needed using LINEAR_LS would be even more efficient.
     ocp.cost.cost_type_e = 'EXTERNAL'
-    H_mat = ca.SX.sym('H', nxu, nxu)
+    H_mat = ca.MX.sym('H', nxu, nxu)
     xu = ca.vertcat(model.x, model.u)
     ocp.model.cost_expr_ext_cost = ca.mtimes([xu.T, H_mat, xu])
     ocp.model.cost_expr_ext_cost_e = ca.mtimes([model.x.T, H_mat[:nx, :nx], model.x])
@@ -72,80 +75,110 @@ def solve_using_acados(problem: ControlBoundedLqrProblem, x0_vals,
 
     if seed is not None:
         ocp.solver_options.hessian_approx = "EXACT"
-        ocp.solver_options.with_solution_sens_wrt_params = True
+        ocp.code_gen_options.with_solution_sens_wrt_params_adj = True
 
     ocp.solver_options.nlp_solver_type = 'SQP'
     ocp.solver_options.with_batch_functionality = True
-    ocp.solver_options.tol = 1e-7
+    ocp.solver_options.tol = tol # NOTE: Might be made one order of magnitude more precise for less mismatch
     if isinstance(problem, ControlBoundedLqrProblem):
         ocp.solver_options.nlp_solver_max_iter = 1  # SQP converges in 1 iteration for LQR
 
     du_dp_adj_batch = None
     n_batch = x0_vals.shape[0]
     if not batched:
-        solver = AcadosOcpSolver(ocp, verbose=vebose_solver_creation, generate=True, build=True)
+        for _ in range(n_exec):
+            solver = AcadosOcpSolver(ocp, verbose=vebose_solver_creation, generate=True, build=True)
 
-        time_start = timer()
-        x_batch_sol = np.zeros((n_batch, N_horizon+1, nx))
-        u_batch_sol = np.zeros((n_batch, N_horizon+1, nu))
-        for i in range(n_batch):
-            # set initial state
-            solver.set(0, 'lbx', x0_vals[i,:])
-            solver.set(0, 'ubx', x0_vals[i,:])
-            # NOTE: Not necessary, but for fairness of comparison we are setting the parameters again
-            solver.set_p_global_and_precompute_dependencies(ocp.p_global_values)
-            # solve
-            solver.solve()
-            # get solution
-            x_sol = solver.get_flat('x').reshape((N_horizon+1, nx))
-            u_sol = solver.get_flat('u').reshape((N_horizon, nu))
-            x_batch_sol[i,:,:] = x_sol
-            u_batch_sol[i,:-1,:] = u_sol
+            best_timing = np.inf
+            best_x_batch_sol = None
+            best_u_batch_sol = None
+            solver.reset()
+            time_start = timer()
+            x_batch_sol = np.zeros((n_batch, N_horizon+1, nx))
+            u_batch_sol = np.zeros((n_batch, N_horizon+1, nu))
+            for i in range(n_batch):
+                # set initial state
+                solver.set(0, 'lbx', x0_vals[i,:])
+                solver.set(0, 'ubx', x0_vals[i,:])
+                # NOTE: Not necessary, but for fairness of comparison we are setting the parameters again
+                solver.set_p_global_and_precompute_dependencies(ocp.p_global_values)
+                # solve
+                solver.solve()
+                # get solution
+                x_sol = solver.get_flat('x').reshape((N_horizon+1, nx))
+                u_sol = solver.get_flat('u').reshape((N_horizon, nu))
+                x_batch_sol[i,:,:] = x_sol
+                u_batch_sol[i,:-1,:] = u_sol
 
-            if verify_kkt_residuals:
-                residuals = solver.get_residuals(recompute=True)
-                if np.any(residuals > ocp.solver_options.tol):
-                    raise Exception(f"KKT residuals are not zero: {residuals}")
+                if verify_kkt_residuals:
+                    residuals = solver.get_residuals(recompute=True)
+                    if np.any(residuals > ocp.solver_options.tol):
+                        raise Exception(f"KKT residuals are not zero: {residuals}")
 
-        timing = timer() - time_start
+            timing = timer() - time_start
+            if timing < best_timing:
+                best_timing = timing
+                best_x_batch_sol = x_batch_sol.copy()
+                best_u_batch_sol = u_batch_sol.copy()
+
+        x_batch_sol = best_x_batch_sol
+        u_batch_sol = best_u_batch_sol
+        timing = best_timing
 
     else:
-        solver = AcadosOcpBatchSolver(ocp, N_batch_max=n_batch, verbose=vebose_solver_creation, num_threads_in_batch_solve=num_threads)
-
-        time_start = timer()
-        x_batch_sol = np.zeros((n_batch, N_horizon+1, nx))
-        u_batch_sol = np.zeros((n_batch, N_horizon+1, nu))
+        solver = AcadosOcpBatchSolver(ocp, N_batch_init=n_batch, verbose=vebose_solver_creation, num_threads_in_batch_solve=num_threads)
 
         if seed is not None:
             seed_u_batch = np.tile(seed, (n_batch, 1, 1))
             seed_u_batch = seed_u_batch.transpose((0, 2, 1))
             n_seed = 1
-            du_dp_adj_batch = np.zeros((n_seed, ocp.dims.np_global))
+        best_timing = np.inf
+        best_x_batch_sol = None
+        best_u_batch_sol = None
+        best_du_dp_adj_batch = None
 
-        # set initial state
-        for j in range(n_batch):
-            solver.ocp_solvers[j].set(0, 'lbx', x0_vals[j,:])
-            solver.ocp_solvers[j].set(0, 'ubx', x0_vals[j,:])
+        for _ in range(n_exec):
+            solver.reset()
+            time_start = timer()
+            x_batch_sol = np.zeros((n_batch, N_horizon+1, nx))
+            u_batch_sol = np.zeros((n_batch, N_horizon+1, nu))
 
-        # set parameters
-        # NOTE: Not necessary, but for fairness of comparison we are setting the parameters again
-        for j in range(n_batch):
-            solver.ocp_solvers[j].set_p_global_and_precompute_dependencies(ocp.p_global_values)
+            du_dp_adj_batch = None
+            if seed is not None:
+                du_dp_adj_batch = np.zeros((n_seed, ocp.dims.np_global))
 
-        # solve
-        solver.solve()
-        # get solution
-        x_batch_sol = solver.get_flat('x').reshape((n_batch, N_horizon+1, nx))
-        u_batch_sol[:, :-1, :] = solver.get_flat('u').reshape((n_batch, N_horizon, nu))
+            # set initial state
+            for j in range(n_batch):
+                solver.ocp_solvers[j].set(0, 'lbx', x0_vals[j,:])
+                solver.ocp_solvers[j].set(0, 'ubx', x0_vals[j,:])
 
-        if seed is not None:
-            solver.setup_qp_matrices_and_factorize()
-            p_sens_ = solver.eval_adjoint_solution_sensitivity(seed_x=None, seed_u=[(0, seed_u_batch)], sanity_checks=False, )
-            du_dp_adj_batch += np.sum(p_sens_, axis=0)
+            # set parameters
+            # NOTE: Not necessary, but for fairness of comparison we are setting the parameters again
+            for j in range(n_batch):
+                solver.ocp_solvers[j].set_p_global_and_precompute_dependencies(ocp.p_global_values)
 
-        timing = timer() - time_start
-        if seed is not None:
-            du_dp_adj_batch = du_dp_adj_batch.flatten()
+            # solve
+            solver.solve()
+            # get solution
+            x_batch_sol = solver.get_flat('x').reshape((n_batch, N_horizon+1, nx))
+            u_batch_sol[:, :-1, :] = solver.get_flat('u').reshape((n_batch, N_horizon, nu))
+
+            if seed is not None:
+                solver.setup_qp_matrices_and_factorize()
+                p_sens_ = solver.eval_adjoint_solution_sensitivity(seed_x=None, seed_u=[(0, seed_u_batch)], sanity_checks=False, )
+                du_dp_adj_batch += np.sum(p_sens_, axis=0)
+
+            timing = timer() - time_start
+            if timing < best_timing:
+                best_timing = timing
+                best_x_batch_sol = x_batch_sol.copy()
+                best_u_batch_sol = u_batch_sol.copy()
+                best_du_dp_adj_batch = None if du_dp_adj_batch is None else du_dp_adj_batch.flatten().copy()
+
+        x_batch_sol = best_x_batch_sol
+        u_batch_sol = best_u_batch_sol
+        timing = best_timing
+        du_dp_adj_batch = best_du_dp_adj_batch
 
     # reshape to match mpc.pytorch
     x_batch_sol = x_batch_sol.transpose((1,0,2))

@@ -20,17 +20,13 @@ from timeit import default_timer as timer
 
 npr.seed(42)
 
-TOL = 1e-6
-N_HORIZON = 20
-
-
-def define_bounded_lqr_test_problem(nx=8, nu=4, umax=1.0):
+def define_bounded_lqr_test_problem(nx=8, nu=4, umax=1.0, N=20, tol=1e-6):
 
     Q_mat = np.eye(nx)
     R_mat = np.eye(nu)
     quadratic_cost = QuadraticCost(Q_mat, R_mat, np.zeros(nx), np.zeros(nu))
 
-    alpha = 0.2
+    alpha = 0.1
     A_mat = np.eye(nx)+alpha*npr.randn(nx, nx)
     B_mat = npr.randn(nx, nu)
     b = npr.randn(nx)
@@ -38,8 +34,9 @@ def define_bounded_lqr_test_problem(nx=8, nu=4, umax=1.0):
     dynamics = LinearDiscreteDynamics(A_mat, B_mat, b)
     control_bounds = ControlBounds(-umax*np.ones((nu,)), umax*np.ones((nu,)))
 
-    ocp = ControlBoundedLqrProblem(dynamics, quadratic_cost, control_bounds, N_horizon=N_HORIZON)
+    ocp = ControlBoundedLqrProblem(dynamics, quadratic_cost, control_bounds, N_horizon=N, tol=tol)
     return ocp
+
 
 def solve_using_cvxpy(
     H_batch,
@@ -49,169 +46,196 @@ def solve_using_cvxpy(
     x0,
     u_lower_batch,
     u_upper_batch,
+    N,
+    tol,
     seed=None,
     device="cpu",
-    codegen_suff=""
+    codegen_suff="",
+    n_exec=1,
 ):
     """Solve min_{tau={x,u}} sum_t 0.5 tau_t^T C_t tau_t
     s.t. x_{t+1} = A_t x_t + B_t u_t + b_t
          x_0 = x0
          u_lower <= u <= u_upper
     """
+    if n_exec < 1:
+        raise ValueError("n_exec must be at least 1.")
 
-    if len(B_batch.shape) == 4:
-        N_horizon, n_batch, nx, nu = B_batch.shape
-        u_lower = u_lower_batch[0, 0]
-        u_upper = u_upper_batch[0, 0]
-        H_single = H_batch[0, 0]
-        A_single = A_batch[0, 0]
-        B_single = B_batch[0, 0]
-        b_single = b_batch[0, 0]
-        # NOTE: All parameters except x0 should actually
-        # be constant over the horizon and batch.
-        for i in range(n_batch):
-            for j in range(N_horizon):
-                assert np.all(u_lower == u_lower_batch[j, i])
-                assert np.all(u_upper == u_upper_batch[j, i])
-                assert np.all(H_batch[j, i] == H_single)
-                assert np.all(A_batch[j, i] == A_single)
-                assert np.all(B_batch[j, i] == B_single)
-                assert np.all(b_batch[j, i] == b_single)
-    elif len(B_batch.shape) == 2:
-        nx, nu = B_batch.shape
-        N_horizon = N_HORIZON + 1
-        n_batch = x0.shape[0]
-        u_lower = u_lower_batch[0]
-        u_upper = u_upper_batch[0]
-        for i in range(N_horizon):
-            assert np.all(u_lower == u_lower_batch[i])
-            assert np.all(u_upper == u_upper_batch[i])
-        H_single = H_batch
-        A_single = A_batch
-        B_single = B_batch
-        b_single = b_batch
-    else:
-        raise ValueError(
-            "Input should either be of shape (N_horizon, N_batch, ...) or of shape (...)."
-        )
+    best_timing = math.inf
+    best_x_cp_tch = None
+    best_u_cp_tch = None
+    best_du_dp = None
 
-    (H_single, A_single, B_single, b_single, x0) = [
-        torch.Tensor(x).double().detach().to(device)
-        for x in [H_single, A_single, B_single, b_single, x0]
-    ]
-    
-    if seed is not None:
-        A_single.requires_grad = True
-        B_single.requires_grad = True
-        b_single.requires_grad = True
-        H_single.requires_grad = True
+    # NOTE: no save way to fully reset solver, thus it is not reused.
 
-    x_cp_tch = torch.zeros((N_horizon, n_batch, nx), dtype=torch.float64)
-    u_cp_tch = torch.zeros((N_horizon, n_batch, nu), dtype=torch.float64)
-
-    tau = cp.Variable((nx + nu, N_horizon), name="tau")
-    A = cp.Parameter((nx, nx), name="A")
-    B = cp.Parameter((nx, nu), name="B")
-    b = cp.Parameter((nx), name="b")
-    C_sqrt = cp.Parameter((nx + nu, nx + nu), name="C_sqrt")
-    x_init = cp.Parameter((nx), name="x_init")
-    assert (u_lower is None) == (u_upper is None)
-
-    objs = []
-    x_0 = tau[:nx, 0]
-    cons = [x_0 == x_init]
-    for t in range(N_horizon):
-        xt = tau[:nx, t]
-        ut = tau[nx:, t]
-        objs.append(0.5 * cp.sum_squares(C_sqrt @ tau[:, t]))
-        if u_lower is not None:
-            cons += [
-                u_lower <= ut,
-                ut <= u_upper,
-            ]
-        if t + 1 < N_horizon:
-            xtp1 = tau[:nx, t + 1]
-            cons.append(xtp1 == A @ xt + B @ ut + b)
-    prob = cp.Problem(cp.Minimize(sum(objs)), cons)
-
-    assert prob.is_dcp()
-    assert prob.is_dpp()
-    solver_args = {
-        "problem": prob,
-        "warm_start": True,
-        "eps_abs": TOL,
-        "eps_rel": TOL,
-        "max_iter": 100000,
-    }
-
-    codegen_mod_name = "lmpc_convex_codegen" + codegen_suff
-    cpg.generate_code(
-        prob,
-        code_dir=codegen_mod_name,
-        solver="OSQP",
-        gradient=True,
-        wrapper=True,
-        prefix=codegen_suff
-    )
-    module = importlib.import_module(f"{codegen_mod_name}.cpg_solver")
-    forward = getattr(module, "forward")
-    backward = getattr(module, "backward")
-    # from lmpc_convex_codegen.cpg_solver import backward, forward  # noqa: F401
-
-    layer = CvxpyLayer(
-        prob,
-        parameters=[A, B, b, C_sqrt, x_init],
-        variables=[tau],
-        custom_method=(forward, backward),
-    ).to(device)
-
-    C_sqrt_single = torch.linalg.cholesky(H_single, upper=True)
-
-    all_params = ["A", "B", "b", "C_sqrt", "x_init"]
-    only_x = ["x_init"]
-
-    time_start = timer()
-    for i in range(n_batch):
-        if i == 0:
-            solver_args["updated_params"] = all_params
+    for i_exec in range(n_exec):
+        if len(B_batch.shape) == 4:
+            N_horizon, n_batch, nx, nu = B_batch.shape
+            u_lower = u_lower_batch[0, 0]
+            u_upper = u_upper_batch[0, 0]
+            H_single = H_batch[0, 0]
+            A_single = A_batch[0, 0]
+            B_single = B_batch[0, 0]
+            b_single = b_batch[0, 0]
+            # NOTE: All parameters except x0 should actually
+            # be constant over the horizon and batch.
+            for i in range(n_batch):
+                for j in range(N_horizon):
+                    assert np.all(u_lower == u_lower_batch[j, i])
+                    assert np.all(u_upper == u_upper_batch[j, i])
+                    assert np.all(H_batch[j, i] == H_single)
+                    assert np.all(A_batch[j, i] == A_single)
+                    assert np.all(B_batch[j, i] == B_single)
+                    assert np.all(b_batch[j, i] == b_single)
+        elif len(B_batch.shape) == 2:
+            nx, nu = B_batch.shape
+            N_horizon = N + 1
+            n_batch = x0.shape[0]
+            u_lower = u_lower_batch[0]
+            u_upper = u_upper_batch[0]
+            for i in range(N_horizon):
+                assert np.all(u_lower == u_lower_batch[i])
+                assert np.all(u_upper == u_upper_batch[i])
+            H_single = H_batch
+            A_single = A_batch
+            B_single = B_batch
+            b_single = b_batch
         else:
-            solver_args["updated_params"] = only_x
-        (tau,) = layer(
-            A_single,
-            B_single,
-            b_single,
-            C_sqrt_single,
-            x0[i],
-            solver_args=solver_args,
-        )
-        x_cp_tch[:, i, :] = tau[:nx, :].T
-        u_cp_tch[:, i, :] = tau[nx:, :].T
-
-    if seed is None:
-        du_dp = None
-    else:
-        u0_star = u_cp_tch[0, :, :].sum(dim=0)
-        u0_star.backward(torch.ones_like(u0_star))
-        du_dp = np.concatenate(
-            (
-                A_single.grad.cpu().numpy().flatten(order="F"),
-                B_single.grad.cpu().numpy().flatten(order="F"),
-                b_single.grad.cpu().numpy().flatten(),
-                H_single.grad.cpu().numpy().flatten(order="F"),
+            raise ValueError(
+                "Input should either be of shape (N_horizon, N_batch, ...) or of shape (...)."
             )
+
+        (H_single, A_single, B_single, b_single, x0) = [
+            torch.Tensor(x).double().detach().to(device)
+            for x in [H_single, A_single, B_single, b_single, x0]
+        ]
+
+        if seed is not None:
+            A_single.requires_grad = True
+            B_single.requires_grad = True
+            b_single.requires_grad = True
+            H_single.requires_grad = True
+
+        x_cp_tch = torch.zeros((N_horizon, n_batch, nx), dtype=torch.float64)
+        u_cp_tch = torch.zeros((N_horizon, n_batch, nu), dtype=torch.float64)
+
+        tau = cp.Variable((nx + nu, N_horizon), name="tau")
+        A = cp.Parameter((nx, nx), name="A")
+        B = cp.Parameter((nx, nu), name="B")
+        b = cp.Parameter((nx), name="b")
+        C_sqrt = cp.Parameter((nx + nu, nx + nu), name="C_sqrt")
+        x_init = cp.Parameter((nx), name="x_init")
+        assert (u_lower is None) == (u_upper is None)
+
+        objs = []
+        x_0 = tau[:nx, 0]
+        cons = [x_0 == x_init]
+        for t in range(N_horizon):
+            xt = tau[:nx, t]
+            ut = tau[nx:, t]
+            objs.append(0.5 * cp.sum_squares(C_sqrt @ tau[:, t]))
+            if u_lower is not None:
+                cons += [
+                    u_lower <= ut,
+                    ut <= u_upper,
+                ]
+            if t + 1 < N_horizon:
+                xtp1 = tau[:nx, t + 1]
+                cons.append(xtp1 == A @ xt + B @ ut + b)
+        prob = cp.Problem(cp.Minimize(sum(objs)), cons)
+
+        assert prob.is_dcp()
+        assert prob.is_dpp()
+        solver_args = {
+            "problem": prob,
+            "warm_start": True,
+            "eps_abs": tol,
+            "eps_rel": tol,
+            "max_iter": 100000,
+        }
+
+        codegen_suff += f"_{i_exec}"
+        codegen_mod_name = "lmpc_convex_codegen" + codegen_suff
+        cpg.generate_code(
+            prob,
+            code_dir=codegen_mod_name,
+            solver="OSQP",
+            gradient=True,
+            wrapper=True,
+            prefix=codegen_suff
         )
-    timing = timer() - time_start
+        module = importlib.import_module(f"{codegen_mod_name}.cpg_solver")
+        forward = getattr(module, "forward")
+        backward = getattr(module, "backward")
+        # from lmpc_convex_codegen.cpg_solver import backward, forward  # noqa: F401
+
+        layer = CvxpyLayer(
+            prob,
+            parameters=[A, B, b, C_sqrt, x_init],
+            variables=[tau],
+            custom_method=(forward, backward),
+        ).to(device)
+
+        C_sqrt_single = torch.linalg.cholesky(H_single, upper=True)
+
+        all_params = ["A", "B", "b", "C_sqrt", "x_init"]
+        only_x = ["x_init"]
+
+        if seed is not None:
+            for param in [A_single, B_single, b_single, H_single]:
+                if param.grad is not None:
+                    param.grad.zero_()
+
+        x_cp_tch = torch.zeros((N_horizon, n_batch, nx), dtype=torch.float64, device=device)
+        u_cp_tch = torch.zeros((N_horizon, n_batch, nu), dtype=torch.float64, device=device)
+
+        time_start = timer()
+        for i in range(n_batch):
+            if i == 0:
+                solver_args["updated_params"] = all_params
+            else:
+                solver_args["updated_params"] = only_x
+            (tau,) = layer(
+                A_single,
+                B_single,
+                b_single,
+                C_sqrt_single,
+                x0[i],
+                solver_args=solver_args,
+            )
+            x_cp_tch[:, i, :] = tau[:nx, :].T
+            u_cp_tch[:, i, :] = tau[nx:, :].T
+
+        if seed is None:
+            du_dp = None
+        else:
+            u0_star = u_cp_tch[0, :, :].sum(dim=0)
+            u0_star.backward(torch.ones_like(u0_star))
+            du_dp = np.concatenate(
+                (
+                    A_single.grad.cpu().numpy().flatten(order="F"),
+                    B_single.grad.cpu().numpy().flatten(order="F"),
+                    b_single.grad.cpu().numpy().flatten(),
+                    H_single.grad.cpu().numpy().flatten(order="F"),
+                )
+            )
+
+        timing = timer() - time_start
+        if timing < best_timing:
+            best_timing = timing
+            best_x_cp_tch = x_cp_tch.detach().cpu().clone()
+            best_u_cp_tch = u_cp_tch.detach().cpu().clone()
+            best_du_dp = du_dp
 
     return (
-        x_cp_tch.cpu().detach().numpy(),
-        u_cp_tch.cpu().detach().numpy(),
-        timing,
-        du_dp,
+        best_x_cp_tch.numpy(),
+        best_u_cp_tch.numpy(),
+        best_timing,
+        best_du_dp,
     )
 
-def solve_using_mpc_pytorch(nx, nu, N_horizon, n_batch, H_batch, c_batch, A_batch, B_batch, b_batch, x0, lbu, ubu,
-                            seed=None, device="cpu"):
-    
+def solve_using_mpc_pytorch(nx, nu, N_horizon, n_batch, H_batch, c_batch, A_batch, B_batch, b_batch, x0, lbu, ubu, tol,
+                            seed=None, device="cpu", n_exec=1):
     N_horizon += 1
 
     if len(B_batch.shape) == 4:
@@ -246,51 +270,68 @@ def solve_using_mpc_pytorch(nx, nu, N_horizon, n_batch, H_batch, c_batch, A_batc
         torch.Tensor(x).double().detach().to(device)
         for x in [H_batch, c_batch, A_batch, B_batch, b_batch, x0, lbu, ubu]
     ]
-    
+
     if seed is not None:
         A_batch.requires_grad = True
         B_batch.requires_grad = True
         b_batch.requires_grad = True
         H_batch.requires_grad = True
 
-    dynamics = AffineDynamics(A_batch, B_batch, b_batch)
-    quad_cost = QuadCost(H_batch, c_batch)
-    mpc_pytorch_solver = mpc.MPC(
-        nx, nu, N_horizon, lbu, ubu, None,
-        lqr_iter=100,  # NOTE: defines max iterations for LQR solver, with the default of 10, it fails on many more problems.
-        backprop=(seed is not None),
-        exit_unconverged=False,
-        eps=TOL,
-        n_batch=n_batch,
-    )
+    if n_exec < 1:
+        raise ValueError("n_exec must be at least 1.")
 
-    time_start = timer()
-    x_mpytorch_, u_mpytorch_, objs_mpytorch = mpc_pytorch_solver(x0, quad_cost, dynamics)
-    x_mpytorch = util.get_data_maybe(x_mpytorch_)
-    u_mpytorch = util.get_data_maybe(u_mpytorch_)
+    best_timing = math.inf
+    best_x_mpytorch = None
+    best_u_mpytorch = None
+    best_du_dp_adj = None
 
-    if seed is None:
-        du_dp_adj = None
-    else:
-        loss = torch.sum(u_mpytorch_[0, :, :])
-        loss.backward()
-        du_dp_adj = np.concatenate((A_batch.grad.cpu().numpy().flatten(order='F'),
-                                    B_batch.grad.cpu().numpy().flatten(order='F'),
-                                    b_batch.grad.cpu().numpy().flatten(),
-                                    H_batch.grad.cpu().numpy().flatten(order='F'),
-                                    ))
+    for _ in range(n_exec):
+        dynamics = AffineDynamics(A_batch, B_batch, b_batch)
+        quad_cost = QuadCost(H_batch, c_batch)
+        mpc_pytorch_solver = mpc.MPC(
+            nx, nu, N_horizon, lbu, ubu, None,
+            lqr_iter=100,  # NOTE: defines max iterations for LQR solver, with the default of 10, it fails on many more problems.
+            backprop=(seed is not None),
+            exit_unconverged=False,
+            eps=tol,
+            n_batch=n_batch,
+        )
 
-    timing = timer() - time_start
+        if seed is not None:
+            for param in [A_batch, B_batch, b_batch, H_batch]:
+                if param.grad is not None:
+                    param.grad.zero_()
 
-    x_mpytorch = x_mpytorch.cpu().detach().numpy()
-    u_mpytorch = u_mpytorch.cpu().detach().numpy()
+        time_start = timer()
+        x_mpytorch_, u_mpytorch_, objs_mpytorch = mpc_pytorch_solver(x0, quad_cost, dynamics)
+        x_mpytorch = util.get_data_maybe(x_mpytorch_)
+        u_mpytorch = util.get_data_maybe(u_mpytorch_)
+
+        if seed is None:
+            du_dp_adj = None
+        else:
+            loss = torch.sum(u_mpytorch_[0, :, :])
+            loss.backward()
+            du_dp_adj = np.concatenate((A_batch.grad.cpu().numpy().flatten(order='F'),
+                                        B_batch.grad.cpu().numpy().flatten(order='F'),
+                                        b_batch.grad.cpu().numpy().flatten(),
+                                        H_batch.grad.cpu().numpy().flatten(order='F'),
+                                        ))
+
+        timing = timer() - time_start
+        if timing < best_timing:
+            best_timing = timing
+            best_x_mpytorch = x_mpytorch.detach().cpu().clone().numpy()
+            best_u_mpytorch = u_mpytorch.detach().cpu().clone().numpy()
+            best_du_dp_adj = du_dp_adj
+
     # if du_dp_adj is not None:
     #     du_dp_adj = du_dp_adj.cpu()
 
-    return x_mpytorch, u_mpytorch, timing, du_dp_adj
+    return best_x_mpytorch, best_u_mpytorch, best_timing, best_du_dp_adj
 
 
-def control_bounded_lqr_solve_and_adj_sens_timings(problem: ControlBoundedLqrProblem, x0, with_mpc_pytorch = False, with_mpc_pytorch_cuda = False, with_cvxpy = False, with_cvxpy_cuda = False, num_threads=None, codegen_suff=""):
+def control_bounded_lqr_solve_and_adj_sens_timings(problem: ControlBoundedLqrProblem, x0, with_acados=True, with_mpc_pytorch = False, with_mpc_pytorch_cuda = False, with_cvxpy = False, with_cvxpy_cuda = False, num_threads=None, codegen_suff="", n_exec=1):
     if with_mpc_pytorch_cuda:
         assert with_mpc_pytorch
     if with_cvxpy_cuda:
@@ -298,11 +339,11 @@ def control_bounded_lqr_solve_and_adj_sens_timings(problem: ControlBoundedLqrPro
 
     if num_threads is None:
         num_threads = get_num_threads_from_multiprocessing()
-    with_acados = True
 
     # get dimensions
     nx, nu = problem.nx, problem.nu
     N_horizon = problem.N_horizon
+    tol = problem.tol
 
     # define seed
     seed = np.ones((nu,))
@@ -312,23 +353,23 @@ def control_bounded_lqr_solve_and_adj_sens_timings(problem: ControlBoundedLqrPro
 
     # solve with acados
     if with_acados:
-        x_ac, u_ac, timing_ac, du_dp_adj_batch = solve_using_acados(problem, x0, seed=seed, batched=True, num_threads=num_threads)
-        store_results(x_ac, u_ac, timing_ac, "acados", problem.control_bounds.u_upper[0], nx, nu, n_batch, N_horizon, sensitivity=True)
+        x_ac, u_ac, timing_ac, du_dp_adj_batch = solve_using_acados(problem, x0, seed=seed, batched=True, num_threads=num_threads, n_exec=n_exec)
+        store_results(x_ac, u_ac, timing_ac, "acados", problem.control_bounds.u_upper[0], nx, nu, n_batch, N_horizon, tol, sensitivity=True)
 
     if with_mpc_pytorch:
         # create batched problem data
         H_batch, c_batch, A_batch, B_batch, b_batch, u_lower_batch, u_upper_batch = create_batched_problem_data(problem, n_batch)
 
         # solve using MPC class of mpc.pytorch
-        x_mpytorch, u_mpytorch, timing_mpytorch, du_dp_adj_mpy = solve_using_mpc_pytorch(nx, nu, N_horizon, n_batch, H_batch, c_batch, A_batch, B_batch, b_batch, x0, u_lower_batch, u_upper_batch, seed=seed)
-        store_results(x_mpytorch, u_mpytorch, timing_mpytorch, "mpc_pytorch", problem.control_bounds.u_upper[0], nx, nu, n_batch, N_horizon, sensitivity=True)
+        x_mpytorch, u_mpytorch, timing_mpytorch, du_dp_adj_mpy = solve_using_mpc_pytorch(nx, nu, N_horizon, n_batch, H_batch, c_batch, A_batch, B_batch, b_batch, x0, u_lower_batch, u_upper_batch, tol, seed=seed, n_exec=n_exec)
+        store_results(x_mpytorch, u_mpytorch, timing_mpytorch, "mpc_pytorch", problem.control_bounds.u_upper[0], nx, nu, n_batch, N_horizon, tol, sensitivity=True)
         # print(f"{u_mpytorch=}")
 
         if with_mpc_pytorch_cuda:
             # move to GPU
             device = "cuda"
-            x_mpytorch_cuda, u_mpytorch_cuda, timing_mpytorch_cuda, du_dp_adj_mpy_cuda = solve_using_mpc_pytorch(nx, nu, N_horizon, n_batch, H_batch, c_batch, A_batch, B_batch, b_batch, x0, u_lower_batch, u_upper_batch, seed=seed, device=device)
-            store_results(x_mpytorch_cuda, u_mpytorch_cuda, timing_mpytorch_cuda, "mpc_pytorch_cuda", problem.control_bounds.u_upper[0], nx, nu, n_batch, N_horizon, sensitivity=True)
+            x_mpytorch_cuda, u_mpytorch_cuda, timing_mpytorch_cuda, du_dp_adj_mpy_cuda = solve_using_mpc_pytorch(nx, nu, N_horizon, n_batch, H_batch, c_batch, A_batch, B_batch, b_batch, x0, u_lower_batch, u_upper_batch, tol, seed=seed, device=device, n_exec=n_exec)
+            store_results(x_mpytorch_cuda, u_mpytorch_cuda, timing_mpytorch_cuda, "mpc_pytorch_cuda", problem.control_bounds.u_upper[0], nx, nu, n_batch, N_horizon, tol, sensitivity=True)
 
     if with_cvxpy:
         # create batched problem data
@@ -345,8 +386,11 @@ def control_bounded_lqr_solve_and_adj_sens_timings(problem: ControlBoundedLqrPro
             x0,
             u_lower_batch,
             u_upper_batch,
+            N_horizon,
+            tol,
             seed=seed,
-            codegen_suff=codegen_suff
+            codegen_suff=codegen_suff,
+            n_exec=n_exec
         )
         store_results(
             x_cvxpy,
@@ -358,6 +402,7 @@ def control_bounded_lqr_solve_and_adj_sens_timings(problem: ControlBoundedLqrPro
             nu,
             n_batch,
             N_horizon,
+            tol,
             sensitivity=True,
         )
 
@@ -377,9 +422,12 @@ def control_bounded_lqr_solve_and_adj_sens_timings(problem: ControlBoundedLqrPro
                 x0,
                 u_lower_batch,
                 u_upper_batch,
+                N_horizon,
+                tol,
                 seed=seed,
                 device=device,
-                codegen_suff=codegen_suff
+                codegen_suff=codegen_suff,
+                n_exec=n_exec
             )
             store_results(
                 x_cvxpy_cuda,
@@ -391,6 +439,7 @@ def control_bounded_lqr_solve_and_adj_sens_timings(problem: ControlBoundedLqrPro
                 nu,
                 n_batch,
                 N_horizon,
+                tol,
                 sensitivity=True,
             )
 
@@ -437,15 +486,15 @@ def create_batched_problem_data(problem: ControlBoundedLqrProblem, n_batch):
     return H_batch, c_batch, A_batch, B_batch, b_batch, u_lower_batch, u_upper_batch
 
 
-def get_results_filename(umax, nx, nu, n_batch, N_horizon, solver, sensitivity=False):
-    return f"results/{solver}_umax_{umax}_nx{nx}_nu{nu}_nbatch{n_batch}_Nhorizon{N_horizon}_sensitivity{sensitivity}.npz"
+def get_results_filename(umax, nx, nu, n_batch, N_horizon, tol, solver, sensitivity=False):
+    return f"results/{solver}_umax_{umax}_nx{nx}_nu{nu}_nbatch{n_batch}_Nhorizon{N_horizon}_tol{tol}_sensitivity{sensitivity}.npz"
 
-def store_results(x, u, timing, solver, umax, nx, nu, n_batch, N_horizon, sensitivity=False):
-    result_filename = get_results_filename(umax, nx, nu, n_batch, N_horizon, solver, sensitivity=sensitivity)
+def store_results(x, u, timing, solver, umax, nx, nu, n_batch, N_horizon, tol, sensitivity=False):
+    result_filename = get_results_filename(umax, nx, nu, n_batch, N_horizon, tol, solver, sensitivity=sensitivity)
     np.savez(result_filename, x=x, u=u, timing=timing)
 
-def load_results_maybe(solver, umax, nx, nu, n_batch, N_horizon, sensitivity=False):
-    result_filename = get_results_filename(umax, nx, nu, n_batch, N_horizon, solver, sensitivity=sensitivity)
+def load_results_maybe(solver, umax, nx, nu, n_batch, N_horizon, tol, sensitivity=False):
+    result_filename = get_results_filename(umax, nx, nu, n_batch, N_horizon, tol, solver, sensitivity=sensitivity)
     if not os.path.exists(result_filename):
         print(f"File {result_filename} does not exist.")
         return None
@@ -457,7 +506,7 @@ def get_num_threads_from_multiprocessing():
     num_threads = multiprocessing.cpu_count()
     return num_threads
 
-def control_bounded_lqr_solve_timings(problem: ControlBoundedLqrProblem, x0, with_mpc_pytorch = True, with_mpc_pytorch_cuda = True, with_cvxpy=True, with_cvxpy_cuda=True, with_acados = True, num_threads=None, codegen_suff=""):
+def control_bounded_lqr_solve_timings(problem: ControlBoundedLqrProblem, x0, with_mpc_pytorch = True, with_mpc_pytorch_cuda = True, with_cvxpy=True, with_cvxpy_cuda=True, with_acados = True, num_threads=None, codegen_suff="", n_exec=1):
     if with_mpc_pytorch_cuda:
         assert with_mpc_pytorch
 
@@ -468,30 +517,31 @@ def control_bounded_lqr_solve_timings(problem: ControlBoundedLqrProblem, x0, wit
     nx, nu = problem.nx, problem.nu
     N_horizon = problem.N_horizon
     umax = problem.control_bounds.u_upper[0]
+    tol = problem.tol
 
     # dimensions
     n_batch = x0.shape[0]
 
     # solve with acados
     if with_acados:
-        x_ac, u_ac, timing_ac, _ = solve_using_acados(problem, x0, batched=True, num_threads=num_threads)
-        store_results(x_ac, u_ac, timing_ac, "acados", umax, nx, nu, n_batch, N_horizon, sensitivity=False)
+        x_ac, u_ac, timing_ac, _ = solve_using_acados(problem, x0, batched=True, num_threads=num_threads, n_exec=n_exec)
+        store_results(x_ac, u_ac, timing_ac, "acados", umax, nx, nu, n_batch, N_horizon, tol, sensitivity=False)
 
     if with_mpc_pytorch:
         # create batched problem data
         H_batch, c_batch, A_batch, B_batch, b_batch, u_lower_batch, u_upper_batch = create_batched_problem_data(problem, n_batch)
 
         # solve using MPC class of mpc.pytorch
-        x_mpytorch, u_mpytorch, timing_mpytorch, _ = solve_using_mpc_pytorch(nx, nu, N_horizon, n_batch, H_batch, c_batch, A_batch, B_batch, b_batch, x0, u_lower_batch, u_upper_batch)
-        store_results(x_mpytorch, u_mpytorch, timing_mpytorch, "mpc_pytorch", umax, nx, nu, n_batch, N_horizon, sensitivity=False)
+        x_mpytorch, u_mpytorch, timing_mpytorch, _ = solve_using_mpc_pytorch(nx, nu, N_horizon, n_batch, H_batch, c_batch, A_batch, B_batch, b_batch, x0, u_lower_batch, u_upper_batch, tol, n_exec=n_exec)
+        store_results(x_mpytorch, u_mpytorch, timing_mpytorch, "mpc_pytorch", umax, nx, nu, n_batch, N_horizon, tol, sensitivity=False)
 
         # print(f"{u_mpytorch=}")
 
         if with_mpc_pytorch_cuda:
             # move to GPU
             device = "cuda"
-            x_mpytorch_cuda, u_mpytorch_cuda, timing_mpytorch_cuda, _ = solve_using_mpc_pytorch(nx, nu, N_horizon, n_batch, H_batch, c_batch, A_batch, B_batch, b_batch, x0, u_lower_batch, u_upper_batch, device=device)
-            store_results(x_mpytorch_cuda, u_mpytorch_cuda, timing_mpytorch_cuda, "mpc_pytorch_cuda", umax, nx, nu, n_batch, N_horizon, sensitivity=False)
+            x_mpytorch_cuda, u_mpytorch_cuda, timing_mpytorch_cuda, _ = solve_using_mpc_pytorch(nx, nu, N_horizon, n_batch, H_batch, c_batch, A_batch, B_batch, b_batch, x0, u_lower_batch, u_upper_batch, tol, device=device, n_exec=n_exec)
+            store_results(x_mpytorch_cuda, u_mpytorch_cuda, timing_mpytorch_cuda, "mpc_pytorch_cuda", umax, nx, nu, n_batch, N_horizon, tol, sensitivity=False)
 
     if with_cvxpy:
         # create batched problem data
@@ -508,7 +558,10 @@ def control_bounded_lqr_solve_timings(problem: ControlBoundedLqrProblem, x0, wit
             x0,
             u_lower_batch,
             u_upper_batch,
+            N_horizon,
+            tol,
             codegen_suff=codegen_suff,
+            n_exec=n_exec
         )
         store_results(
             x_cvxpy,
@@ -519,7 +572,7 @@ def control_bounded_lqr_solve_timings(problem: ControlBoundedLqrProblem, x0, wit
             nx,
             nu,
             n_batch,
-            N_horizon,
+            N_horizon, tol,
             sensitivity=False,
         )
 
@@ -534,8 +587,11 @@ def control_bounded_lqr_solve_timings(problem: ControlBoundedLqrProblem, x0, wit
                 x0,
                 u_lower_batch,
                 u_upper_batch,
+                N_horizon,
+                tol,
                 device=device,
                 codegen_suff=codegen_suff,
+                n_exec=n_exec
             )
             store_results(
                 x_cvxpy_cuda,
@@ -546,7 +602,7 @@ def control_bounded_lqr_solve_timings(problem: ControlBoundedLqrProblem, x0, wit
                 nx,
                 nu,
                 n_batch,
-                N_horizon,
+                N_horizon, tol,
                 sensitivity=False,
             )
 
@@ -559,23 +615,33 @@ def control_bounded_lqr_solve_timings(problem: ControlBoundedLqrProblem, x0, wit
         print(f"cvxpy (gen + layer): {timing_cvxpy=}")
 
 
-
-PROBLEM_CONFIGS = [(1e4, 8, 4, "one"),
-                   (1e0, 8, 4, "two")]
 N_BATCH_EXPERIMENT = 2**7
-def main_experiment(with_mpc_pytorch=True, with_mpc_pytorch_cuda=True, with_cvxpy=True, with_cvxpy_cuda=True, num_threads=None):
-    n_batch = N_BATCH_EXPERIMENT
+
+PROBLEM_CONFIGS = [
+    (1e4, 8, 4, 20, 1e-6, "default"),
+    (1e0, 8, 4, 20, 1e-6, "umax"),
+    (1e4, 8, 4, 100, 1e-6, "N_horizon_big"),
+    # (1e4, 8, 4, 20, 1e-4, "tolerance_big"),
+    # (1e4, 8, 4, 20, 1e-8, "tolerance_small"),
+    (1e4, 16, 8, 20, 1e-6, "high_dim"),
+    # (1e4, 32, 16, 20, 1e-6, "high_dim_very"),
+]
+
+RUN_CONFIGS = PROBLEM_CONFIGS
+
+def main_experiment(with_acados=True, with_mpc_pytorch=True, with_mpc_pytorch_cuda=True, with_cvxpy=True, with_cvxpy_cuda=True, num_threads=None, n_exec=1):
     if num_threads is None:
         num_threads = get_num_threads_from_multiprocessing()
 
-    for umax, nx, nu, codegen_suff in PROBLEM_CONFIGS:
-        # x0 = npr.randn(n_batch, nx)
+    for umax, nx, nu, N_horizon, tol, codegen_suff in RUN_CONFIGS:
+        print(f"running with {codegen_suff}")
+        x0 = 0.5 * npr.randn(N_BATCH_EXPERIMENT, nx)
         # load x0 from file to get timings consistent with initial submission.
         # NOTE: for new sampled x0, mpc.pytorch is roughly 2x slower.
-        x0 = np.load("x0_initial_submission.npy")
-        problem = define_bounded_lqr_test_problem(umax=umax, nx=nx, nu=nu)
-        control_bounded_lqr_solve_timings(problem, x0=x0, with_mpc_pytorch=with_mpc_pytorch, with_mpc_pytorch_cuda=with_mpc_pytorch_cuda, with_cvxpy=with_cvxpy, with_cvxpy_cuda=with_cvxpy_cuda, num_threads=num_threads, codegen_suff=codegen_suff)
-        control_bounded_lqr_solve_and_adj_sens_timings(problem, x0=x0, with_mpc_pytorch=with_mpc_pytorch, with_mpc_pytorch_cuda=with_mpc_pytorch_cuda, with_cvxpy=with_cvxpy, with_cvxpy_cuda=with_cvxpy_cuda, num_threads=num_threads, codegen_suff=codegen_suff)
+        # x0 = np.load("x0_initial_submission.npy")
+        problem = define_bounded_lqr_test_problem(umax=umax, nx=nx, nu=nu, N=N_horizon, tol=tol)
+        control_bounded_lqr_solve_timings(problem, x0=x0, with_acados=with_acados, with_mpc_pytorch=with_mpc_pytorch, with_mpc_pytorch_cuda=with_mpc_pytorch_cuda, with_cvxpy=with_cvxpy, with_cvxpy_cuda=with_cvxpy_cuda, num_threads=num_threads, codegen_suff=codegen_suff, n_exec=n_exec)
+        control_bounded_lqr_solve_and_adj_sens_timings(problem, x0=x0, with_acados=with_acados, with_mpc_pytorch=with_mpc_pytorch, with_mpc_pytorch_cuda=with_mpc_pytorch_cuda, with_cvxpy=with_cvxpy, with_cvxpy_cuda=with_cvxpy_cuda, num_threads=num_threads, codegen_suff=codegen_suff, n_exec=n_exec)
 
 def speedup_formatter(timing, baseline):
     string = f"{timing/baseline:.2g}"
@@ -584,72 +650,87 @@ def speedup_formatter(timing, baseline):
     string = f"$\\times{string}$"
     return string
 
+
 def evaluate_experiment_latex(cuda: bool = False):
     n_batch = N_BATCH_EXPERIMENT
-    configs = PROBLEM_CONFIGS
+    configs = RUN_CONFIGS
 
-    nx_vals = [c[1] for c in configs]
-    nu_vals = [c[2] for c in configs]
-    nxu_varies = len(set(nx_vals)) != 1 or len(set(nu_vals)) != 1
+    # --- Default config (first entry) for computing differences ---
+    default_config = configs[0]
+    default_umax, default_nx, default_nu, default_N, default_tol, _ = default_config
 
     table_string = r"\begin{table*}"
     table_string += "\n\centering\n"
-    table_string += "\caption{Timings in [ms] for solving $n_{\mathrm{batch}} \!=\! " + f"{n_batch}$ bounded LQR problems with $N \!=\! {N_HORIZON}$"
-    if not nxu_varies:
-        nx = configs[0][1]
-        nu = configs[0][2]
-        table_string += f", $n_x \!=\! {nx}$, $n_u \!=\! {nu}$, $n_\\theta" + f" \!= \!{nx*(nx+nu+1)+(nx+nu)**2}$"
-    table_string += r". In parenthesis in multiples the \acados{} runtime for the others."
-
-    table_string += r"\label{tab:mcp_pytorch}" + "\n"
+    table_string += "\caption{Timings in [ms] for solving $n_{\mathrm{batch}} \!=\! " + f"{n_batch}$ bounded LQR problems with varying parameters."
+    table_string += r" In the config column, the difference to the default configuration is shown."
+    table_string += r" In parentheses are multiples of the \acados{} runtime."
+    table_string += r"\label{tab:mcp_pytorch_big}" + "\n"
     table_string += "}\n"
     table_string += "\\vspace{-1.5mm}\n"
     table_string += "\\footnotesize\n"
     table_string += r"\begin{tabular}{ccccccc}" + "\n"
     table_string += r"\toprule" + "\n"
     table_string += r"& \multicolumn{3}{c}{\textbf{Nominal solution}} & \multicolumn{3}{c}{\textbf{Solution + adjoint sens.}}\\" + "\n"
-    table_string += r"$u_{\mathrm{max}}$ & \acados & \texttt{mpc.pytorch} & \texttt{cvxpygen}"
+    table_string += r"config & \acados & \texttt{mpc.pytorch} & \texttt{cvxpygen}"
     table_string += r"& \acados & \texttt{mpc.pytorch} & \texttt{cvxpygen}"
     table_string += "\\\\\n"
     table_string += r"\midrule" + "\n"
 
-    for umax, nx, nu, _ in configs:
-        # timings solve
-        results_acados = load_results_maybe("acados", umax, nx, nu, n_batch, N_HORIZON, sensitivity=False)
-        if not cuda:
-            results_mpytorch = load_results_maybe("mpc_pytorch", umax, nx, nu, n_batch, N_HORIZON, sensitivity=False)
-            results_cpgen = load_results_maybe("cvxpy", umax, nx, nu, n_batch, N_HORIZON, sensitivity=False)
+    for i, (umax, nx, nu, N_horizon, tol, _) in enumerate(configs):
+        # --- Config column (difference from default) ---
+        if i == 0:
+            config_str = "default"
         else:
-            results_mpytorch = load_results_maybe("mpc_pytorch_cuda", umax, nx, nu, n_batch, N_HORIZON, sensitivity=False)
-            results_cpgen = load_results_maybe("cvxpy_cuda", umax, nx, nu, n_batch, N_HORIZON, sensitivity=False)
+            diff_parts = []
+            if umax != default_umax:
+                umax_log = math.log10(umax)
+                if umax_log == int(umax_log):
+                    umax_exp = int(umax_log)
+                    if umax_exp == 0:
+                        diff_parts.append(r"$u_{\max} = 1$")
+                    else:
+                        diff_parts.append(f"$u_{{\\max}} = 10^{{{umax_exp}}}$")
+                else:
+                    diff_parts.append(f"$u_{{\\max}} = {umax}$")
+            if nx != default_nx:
+                diff_parts.append(f"$n_x = {nx}$")
+            if nu != default_nu:
+                diff_parts.append(f"$n_u = {nu}$")
+            if N_horizon != default_N:
+                diff_parts.append(f"$N = {N_horizon}$")
+            if tol != default_tol:
+                tol_exp = int(math.log10(tol))
+                diff_parts.append(f"$\\mathrm{{tol}} = 10^{{{tol_exp}}}$")
+            config_str = ", ".join(diff_parts)
+
+        # timings solve
+        results_acados = load_results_maybe("acados", umax, nx, nu, n_batch, N_horizon, tol, sensitivity=False)
+        if not cuda:
+            results_mpytorch = load_results_maybe("mpc_pytorch", umax, nx, nu, n_batch, N_horizon, tol, sensitivity=False)
+            results_cpgen = load_results_maybe("cvxpy", umax, nx, nu, n_batch, N_horizon, tol, sensitivity=False)
+        else:
+            results_mpytorch = load_results_maybe("mpc_pytorch_cuda", umax, nx, nu, n_batch, N_horizon, tol, sensitivity=False)
+            results_cpgen = load_results_maybe("cvxpy_cuda", umax, nx, nu, n_batch, N_horizon, tol, sensitivity=False)
         timing_ac = results_acados['timing']
         timing_mpytorch = results_mpytorch['timing']
         timing_cpgen = results_cpgen['timing']
-        table_string += "$"
-        if umax == 1e4:
-            table_string += r"10^4"
-        else:
-            table_string += f"{umax}"
-        table_string += "$"
-        if nxu_varies:
-            table_string += f", $n_x = {nx}$, $n_u= {nu}$"
-        table_string += f"& {timing_ac*1e3:.1f} & ${int(timing_mpytorch*1e3)} \;\,$ ({speedup_formatter(timing_mpytorch, timing_ac)}) & ${int(timing_cpgen*1e3)} \;\,$ ({speedup_formatter(timing_cpgen, timing_ac)})"
+
+        table_string += f"{config_str}"
+        table_string += f"& {timing_ac*1e3:.1f} & ${int(timing_mpytorch*1e3)} \\;\\,$ ({speedup_formatter(timing_mpytorch, timing_ac)}) & ${int(timing_cpgen*1e3)} \\;\\,$ ({speedup_formatter(timing_cpgen, timing_ac)})"
 
         # timings sensitivity
-        results_acados = load_results_maybe("acados", umax, nx, nu, n_batch, N_HORIZON, sensitivity=True)
+        results_acados = load_results_maybe("acados", umax, nx, nu, n_batch, N_horizon, tol, sensitivity=True)
         timing_ac = results_acados['timing']
         if not cuda:
-            results_mpytorch = load_results_maybe("mpc_pytorch", umax, nx, nu, n_batch, N_HORIZON, sensitivity=True)
-            results_cpgen = load_results_maybe("cvxpy", umax, nx, nu, n_batch, N_HORIZON, sensitivity=True)
+            results_mpytorch = load_results_maybe("mpc_pytorch", umax, nx, nu, n_batch, N_horizon, tol, sensitivity=True)
+            results_cpgen = load_results_maybe("cvxpy", umax, nx, nu, n_batch, N_horizon, tol, sensitivity=True)
         else:
-            results_mpytorch = load_results_maybe("mpc_pytorch_cuda", umax, nx, nu, n_batch, N_HORIZON, sensitivity=True)
-            results_cpgen = load_results_maybe("cvxpy_cuda", umax, nx, nu, n_batch, N_HORIZON, sensitivity=True)
+            results_mpytorch = load_results_maybe("mpc_pytorch_cuda", umax, nx, nu, n_batch, N_horizon, tol, sensitivity=True)
+            results_cpgen = load_results_maybe("cvxpy_cuda", umax, nx, nu, n_batch, N_horizon, tol, sensitivity=True)
 
         timing_cpgen = results_cpgen['timing']
         timing_mpytorch = results_mpytorch['timing']
-        # table_string += f"& {timing_ac*1e3:.1f} & {speedup_formatter(timing_mpytorch, timing_ac)} & {speedup_formatter(timing_cpgen, timing_ac)}"
-        table_string += f"& {timing_ac*1e3:.1f} & ${int(timing_mpytorch*1e3)} \;\,$ ({speedup_formatter(timing_mpytorch, timing_ac)}) & ${int(timing_cpgen*1e3)} \;\,$ ({speedup_formatter(timing_cpgen, timing_ac)})"
-
+        table_string += f"& {timing_ac*1e3:.1f} & ${int(timing_mpytorch*1e3)} \\;\\,$ ({speedup_formatter(timing_mpytorch, timing_ac)}) & ${int(timing_cpgen*1e3)} \\;\\,$ ({speedup_formatter(timing_cpgen, timing_ac)})"
 
         table_string += "\\\\\n"
 
@@ -667,97 +748,96 @@ def evaluate_experiment_latex(cuda: bool = False):
 
 def evaluate_experiment_markdown(cuda: bool = False):
     """
-    Evaluates the experiment and generates a results table in Markdown format.
+    Evaluates the experiment with varying N_horizon, tolerance, and dimensions
+    and generates a results table in Markdown format.
     """
     n_batch = N_BATCH_EXPERIMENT
-    configs = PROBLEM_CONFIGS
-
-    nx_vals = [c[1] for c in configs]
-    nu_vals = [c[2] for c in configs]
-    nxu_varies = len(set(nx_vals)) != 1 or len(set(nu_vals)) != 1
+    configs = RUN_CONFIGS
 
     table_string = ""
 
     # --- Generate caption ---
-    caption_base = f"Timings for solving $n_{{\mathrm{{batch}}}} = {n_batch}$ bounded LQR problems with $N = {N_HORIZON}$"
-    if not nxu_varies:
-        nx = configs[0][1]
-        nu = configs[0][2]
-        n_theta = nx * (nx + nu + 1) + (nx + nu)**2
-        caption_base += f", $n_x = {nx}$, $n_u = {nu}$, $n_\\theta = {n_theta}$"
-    caption_base += ". Given in [ms] for `acados` and in multiples of the `acados` runtime for the others."
-    table_string += f"**Table:** {caption_base}\n\n" # Add caption as bold text
+    caption_base = f"Timings for solving $n_{{\\mathrm{{batch}}}} = {n_batch}$ bounded LQR problems with varying parameters and defaults $N=20$, $n_x=8$, $n_u=$ and $n_\\theta = n_x^2+n_xn_u + n_x + (n_x+n_u)^2$. In the config column, the difference to the default configuration is shown. In parentheses are multiples of the `acados` runtime."
+    table_string += f"**Table:** {caption_base}\n\n"
 
     # --- Generate Table Header ---
-    table_string += "| $u_{\mathrm{max}}$ | `acados` (Nominal) | `mpc.pytorch` (Nominal) | `cvxpygen` (Nominal) | `acados` (Adjoint Sens.) | `mpc.pytorch` (Adjoint Sens.) | `cvxpygen` (Adjoint Sens.) |\n"
-    table_string += "|---------------|------------------|-----------------------|-------------------|-------------------------|--------------------------|-------------------------|\n"
+    table_string += "| config | `acados` (Nominal) | `mpc.pytorch` (Nominal) | `cvxpygen` (Nominal) | `acados` (Nominal + Adjoint Sens.) | `mpc.pytorch` (Nominal + Adjoint Sens.) | `cvxpygen` (Nominal + Adjoint Sens.) |\n"
+    table_string += "|-----------------|-------------------|------------------------|---------------------|-------------------------------|----------------------------------|-----------------------------------|\n"
+
+    # --- Default config (first entry) for computing differences ---
+    default_config = configs[0]
+    default_umax, default_nx, default_nu, default_N, default_tol, _ = default_config
 
     # --- Generate Table Rows ---
-    for umax, nx, nu, _ in configs:
+    for i, (umax, nx, nu, N_horizon, tol, _) in enumerate(configs):
         row_parts = []
 
-        # --- Config Column ---
-        config_str = "$"
-        if umax == 1e4:
-            config_str += r"10^4"
+        # --- Config Column (difference from default) ---
+        if i == 0:
+            config_str = "default"
         else:
-            config_str += f"{umax:.1f}" if isinstance(umax, float) else f"{umax}" # Format float umax
-        config_str += "$"
-        if nxu_varies:
-            config_str += f", $n_x = {nx}$, $n_u = {nu}$"
-
+            diff_parts = []
+            if umax != default_umax:
+                umax_log = math.log10(umax)
+                if umax_log == int(umax_log):
+                    umax_exp = int(umax_log)
+                    if umax_exp == 0:
+                        diff_parts.append(r"$u_{\max} = 1$")
+                    else:
+                        diff_parts.append(f"$u_{{\\max}} = 10^{{{umax_exp}}}$")
+                else:
+                    diff_parts.append(f"$u_{{\\max}} = {umax}$")
+            if nx != default_nx:
+                diff_parts.append(f"$n_x = {nx}$")
+            if nu != default_nu:
+                diff_parts.append(f"$n_u = {nu}$")
+            if N_horizon != default_N:
+                diff_parts.append(f"$N = {N_horizon}$")
+            if tol != default_tol:
+                tol_exp = int(math.log10(tol))
+                diff_parts.append(f"$\\mathrm{{tol}} = 10^{{{tol_exp}}}$")
+            config_str = ", ".join(diff_parts)
         row_parts.append(config_str)
 
         # --- Timings: nominal solution ---
-        results_acados_nom = load_results_maybe("acados", umax, nx, nu, n_batch, N_HORIZON, sensitivity=False)
+        results_acados_nom = load_results_maybe("acados", umax, nx, nu, n_batch, N_horizon, tol, sensitivity=False)
         if not cuda:
-            results_mpytorch_nom = load_results_maybe("mpc_pytorch", umax, nx, nu, n_batch, N_HORIZON, sensitivity=False)
-            results_cpgen_nom = load_results_maybe("cvxpy", umax, nx, nu, n_batch, N_HORIZON, sensitivity=False)
+            results_mpytorch_nom = load_results_maybe("mpc_pytorch", umax, nx, nu, n_batch, N_horizon, tol, sensitivity=False)
+            results_cpgen_nom = load_results_maybe("cvxpy", umax, nx, nu, n_batch, N_horizon, tol, sensitivity=False)
         else:
-            results_mpytorch_nom = load_results_maybe("mpc_pytorch_cuda", umax, nx, nu, n_batch, N_HORIZON, sensitivity=False)
-            results_cpgen_nom = load_results_maybe("cvxpy_cuda", umax, nx, nu, n_batch, N_HORIZON, sensitivity=False)
+            results_mpytorch_nom = load_results_maybe("mpc_pytorch_cuda", umax, nx, nu, n_batch, N_horizon, tol, sensitivity=False)
+            results_cpgen_nom = load_results_maybe("cvxpy_cuda", umax, nx, nu, n_batch, N_horizon, tol, sensitivity=False)
 
         timing_ac_nom = results_acados_nom['timing'] if results_acados_nom else float('nan')
         timing_mpytorch_nom = results_mpytorch_nom['timing'] if results_mpytorch_nom else float('nan')
         timing_cpgen_nom = results_cpgen_nom['timing'] if results_cpgen_nom else float('nan')
 
-        speedup_mpytorch_nom = timing_mpytorch_nom / timing_ac_nom
-        speedup_cpgen_nom = timing_cpgen_nom / timing_ac_nom
-
         row_parts.extend([f"{timing_ac_nom*1e3:.1f}" if not math.isnan(timing_ac_nom) else "-",
-                          f"{speedup_mpytorch_nom:.2g}" if not math.isnan(speedup_mpytorch_nom) else "-",
-                          f"{speedup_cpgen_nom:.2g}" if not math.isnan(speedup_cpgen_nom) else "-"])
-
+                          f"{int(timing_mpytorch_nom*1e3)} ({speedup_formatter(timing_mpytorch_nom, timing_ac_nom)})" if not math.isnan(timing_mpytorch_nom) else "-",
+                          f"{int(timing_cpgen_nom*1e3)} ({speedup_formatter(timing_cpgen_nom, timing_ac_nom)})" if not math.isnan(timing_cpgen_nom) else "-"])
 
         # --- Timings: solution + adjoint sensitivity ---
-        results_acados_sens = load_results_maybe("acados", umax, nx, nu, n_batch, N_HORIZON, sensitivity=True)
+        results_acados_sens = load_results_maybe("acados", umax, nx, nu, n_batch, N_horizon, tol, sensitivity=True)
         if not cuda:
-            results_mpytorch_sens = load_results_maybe("mpc_pytorch", umax, nx, nu, n_batch, N_HORIZON, sensitivity=True)
-            results_cpgen_sens = load_results_maybe("cvxpy", umax, nx, nu, n_batch, N_HORIZON, sensitivity=True)
+            results_mpytorch_sens = load_results_maybe("mpc_pytorch", umax, nx, nu, n_batch, N_horizon, tol, sensitivity=True)
+            results_cpgen_sens = load_results_maybe("cvxpy", umax, nx, nu, n_batch, N_horizon, tol, sensitivity=True)
         else:
-            results_mpytorch_sens = load_results_maybe("mpc_pytorch_cuda", umax, nx, nu, n_batch, N_HORIZON, sensitivity=True)
-            results_cpgen_sens = load_results_maybe("cvxpy_cuda", umax, nx, nu, n_batch, N_HORIZON, sensitivity=True)
+            results_mpytorch_sens = load_results_maybe("mpc_pytorch_cuda", umax, nx, nu, n_batch, N_horizon, tol, sensitivity=True)
+            results_cpgen_sens = load_results_maybe("cvxpy_cuda", umax, nx, nu, n_batch, N_horizon, tol, sensitivity=True)
         timing_ac_sens = results_acados_sens['timing'] if results_acados_sens else float('nan')
         timing_mpytorch_sens = results_mpytorch_sens['timing'] if results_mpytorch_sens else float('nan')
         timing_cpgen_sens = results_cpgen_sens['timing'] if results_cpgen_sens else float('nan')
 
-        print("\nTimings for umax =", umax)
+        print(f"\nTimings for nx={nx}, nu={nu}, N={N_horizon}, tol={tol}")
         print(f"Nominal: timings in ms: acados: {timing_ac_nom*1e3:.2f}, mpc.pytorch: {timing_mpytorch_nom*1e3:.2f}, cvxpygen: {timing_cpgen_nom*1e3:.2f}")
         print(f"Sensitivity: timings in ms: acados: {timing_ac_sens*1e3:.2f}, mpc.pytorch: {timing_mpytorch_sens*1e3:.2f}, cvxpygen: {timing_cpgen_sens*1e3:.2f}")
 
-        # Speedup calculation: mpc.pytorch / acados
-        speedup_mpytorch_sens = timing_mpytorch_sens / timing_ac_sens
-        speedup_cpgen_sens = timing_cpgen_sens / timing_ac_sens
-
         row_parts.extend([f"{timing_ac_sens*1e3:.1f}" if not math.isnan(timing_ac_sens) else "-",
-                          f"{speedup_mpytorch_sens:.2g}" if not math.isnan(speedup_mpytorch_sens) else "-",
-                          f"{speedup_cpgen_sens:.2g}" if not math.isnan(speedup_cpgen_sens) else "-"])
-
+                          f"{int(timing_mpytorch_sens*1e3)} ({speedup_formatter(timing_mpytorch_sens, timing_ac_sens)})" if not math.isnan(timing_mpytorch_sens) else "-",
+                          f"{int(timing_cpgen_sens*1e3)} ({speedup_formatter(timing_cpgen_sens, timing_ac_sens)})" if not math.isnan(timing_cpgen_sens) else "-"])
 
         # --- Append Row to Table String ---
         table_string += "| " + " | ".join(row_parts) + " |\n"
-
-    # --- No Footer needed for Markdown ---
 
     # --- Write to File ---
     name = "results_table.md" if not cuda else "results_table_cuda.md"
@@ -767,9 +847,9 @@ def evaluate_experiment_markdown(cuda: bool = False):
 
 
 def analyze_constraint_activeness_in_results(config):
-    umax, nx, nu, _ = config
+    umax, nx, nu, N_horizon, tol, _ = config
     n_batch = N_BATCH_EXPERIMENT
-    results_acados = load_results_maybe("acados", umax, nx, nu, n_batch, N_HORIZON, sensitivity=False)
+    results_acados = load_results_maybe("acados", umax, nx, nu, n_batch, N_horizon, tol, sensitivity=False)
     u_sol = results_acados['u']
     u_max_abs = np.max(np.abs(u_sol))
     print(f"u_max_abs: {u_max_abs}, umax: {umax}")
@@ -785,13 +865,13 @@ def analyze_constraint_activeness_in_results(config):
 
 
 def compare_results_xu(config):
-    umax, nx, nu, _ = config
+    umax, nx, nu, N_horizon, tol, _ = config
     n_batch = N_BATCH_EXPERIMENT
     solver_names = ["acados", "mpc_pytorch", "cvxpy"]
     u_sol_list = []
     x_sol_list = []
     for solver in solver_names:
-        results = load_results_maybe(solver, umax, nx, nu, n_batch, N_HORIZON, sensitivity=False)
+        results = load_results_maybe(solver, umax, nx, nu, n_batch, N_horizon, tol, sensitivity=False)
         if results is None:
             raise Exception(f"Results for {solver} not found.")
         u_sol_list.append(results['u'])
@@ -808,8 +888,9 @@ def compare_results_xu(config):
         max_diff_x = np.max(diff_x)
         mean_diff_x = np.mean(diff_x)
         print(f"\nComparing {solver_names[0]} with {solver_names[i]}:")
+        print(f"Config {umax}, {nx}, {nu}, {N_horizon}, {tol}")
         print(f"Diff x: max {max_diff_x:.4f}, mean: {mean_diff_x:.4f}, diff u: max {max_diff_u:.4f}, mean: {mean_diff_u:.4f}")
-        if max_diff_x > TOL*1e2 or max_diff_u > TOL*1e2:
+        if max_diff_x > 1e-4 or max_diff_u > 1e-4:
             print("Results are NOT consistent.")
         else:
             print("Results are consistent within numerical precision.")
@@ -819,21 +900,21 @@ if __name__ == "__main__":
     # ensure results directory exists
     os.makedirs("results", exist_ok=True)
 
-    # num_threads = 4  # experiments in paper were run with this for the i7-8665U CPU
+    num_threads = 4  # experiments in paper were run with this for the i7-8665U CPU
     # num_threads = 16  # experiments in paper were run with this for the AMD Ryzen 9 5950X 16-Core Processor
-    num_threads = None  # -> detect number of threads automatically.
+    # num_threads = 8  # -> detect number of threads automatically.
 
     # if cuda is available, use it (or set this manually to True/False)
-    cuda = torch.cuda.is_available()
+    cuda = False
 
     # experiments
-    main_experiment(with_mpc_pytorch=True, with_mpc_pytorch_cuda=cuda, with_cvxpy=True, with_cvxpy_cuda=cuda, num_threads=num_threads)
+    # main_experiment(with_acados=True, with_mpc_pytorch=True, with_mpc_pytorch_cuda=cuda, with_cvxpy=True, with_cvxpy_cuda=cuda, num_threads=num_threads, n_exec=5)
 
     # Use this to generate the desired LaTeX tables out of the experiment data
     evaluate_experiment_latex(cuda=cuda)
     evaluate_experiment_markdown(cuda=cuda)
 
-    analyze_constraint_activeness_in_results(PROBLEM_CONFIGS[0])
-    analyze_constraint_activeness_in_results(PROBLEM_CONFIGS[1])
-    compare_results_xu(PROBLEM_CONFIGS[0])
-    compare_results_xu(PROBLEM_CONFIGS[1])
+    analyze_constraint_activeness_in_results(RUN_CONFIGS[0])
+    analyze_constraint_activeness_in_results(RUN_CONFIGS[1])
+    for i in range(len(RUN_CONFIGS)):
+        compare_results_xu(RUN_CONFIGS[i])

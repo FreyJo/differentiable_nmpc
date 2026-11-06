@@ -1,34 +1,3 @@
-#
-# Copyright (c) The acados authors.
-#
-# This file is part of acados.
-#
-# The 2-Clause BSD License
-#
-# Redistribution and use in source and binary forms, with or without
-# modification, are permitted provided that the following conditions are met:
-#
-# 1. Redistributions of source code must retain the above copyright notice,
-# this list of conditions and the following disclaimer.
-#
-# 2. Redistributions in binary form must reproduce the above copyright notice,
-# this list of conditions and the following disclaimer in the documentation
-# and/or other materials provided with the distribution.
-#
-# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-# ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
-# LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-# CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-# SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-# INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-# CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-# ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-# POSSIBILITY OF SUCH DAMAGE.;
-#
-
-
 """
 Test for solution sensitivities with many parameters.
 """
@@ -339,7 +308,8 @@ def export_parametric_ocp(
     if hessian_approx == "EXACT":
         ocp.solver_options.qp_solver_ric_alg = qp_solver_ric_alg
         ocp.solver_options.qp_solver_cond_N = ocp.solver_options.N_horizon
-        ocp.solver_options.with_solution_sens_wrt_params = True
+        ocp.code_gen_options.with_solution_sens_wrt_params_forw = True
+        ocp.code_gen_options.with_solution_sens_wrt_params_adj = True
     else:
         ocp.solver_options.nlp_solver_max_iter = nlp_iter
         ocp.solver_options.qp_solver_cond_N = ocp.solver_options.N_horizon
@@ -353,21 +323,23 @@ def export_parametric_ocp(
 
 def main_parametric(args, qp_solver_ric_alg: int = 0,
                     chain_params_: dict = get_chain_params(),
+                    with_forw_via_adjoints: bool = False,
+                    with_u_forw_via_adjoints: bool = True,
                     generate_code: bool = True,
                     timing_data_file: str = "timing_data.pkl",
                     ) -> None:
     ocp, parameter_values = export_parametric_ocp(
         chain_params_=chain_params_, qp_solver_ric_alg=qp_solver_ric_alg, integrator_type="DISCRETE",
     )
-    with_more_adjoints = True
     large_fractions = False # True makes nicer plot labels, but doesnt work for some people.
     ocp_json_file = "acados_ocp_" + ocp.model.name + ".json"
 
     # Check if json_file exists
     if not generate_code and os.path.exists(ocp_json_file):
-        ocp_solver = AcadosOcpSolver(ocp, json_file=ocp_json_file, build=False, generate=False)
+        ocp = AcadosOcp.from_json(ocp_json_file)
+        ocp_solver = AcadosOcpSolver(ocp, build=False, generate=False)
     else:
-        ocp_solver = AcadosOcpSolver(ocp, json_file=ocp_json_file)
+        ocp_solver = AcadosOcpSolver(ocp, verbose=False)
 
     sensitivity_ocp, _ = export_parametric_ocp(
         chain_params_=chain_params_,
@@ -380,9 +352,10 @@ def main_parametric(args, qp_solver_ric_alg: int = 0,
     ocp_json_file = "acados_sensitivity_ocp_" + sensitivity_ocp.model.name + ".json"
     # Check if json_file exists
     if not generate_code and os.path.exists(ocp_json_file):
-        sensitivity_solver = AcadosOcpSolver(sensitivity_ocp, json_file=ocp_json_file, build=False, generate=False)
+        sensitivity_ocp = AcadosOcp.from_json(ocp_json_file)
+        sensitivity_solver = AcadosOcpSolver(sensitivity_ocp, build=False, generate=False)
     else:
-        sensitivity_solver = AcadosOcpSolver(sensitivity_ocp, json_file=ocp_json_file)
+        sensitivity_solver = AcadosOcpSolver(sensitivity_ocp, verbose=False)
 
     M = chain_params_["n_mass"] - 2
     xEndRef = np.zeros((3, 1))
@@ -411,19 +384,20 @@ def main_parametric(args, qp_solver_ric_alg: int = 0,
 
     timings_solve_ocp_solver = np.zeros((np_test))
     timings_lin_and_factorize = np.zeros((np_test))
-    timings_lin_params = np.zeros((np_test))
     timings_solve_params = np.zeros((np_test))
     timings_store_load = np.zeros((np_test))
     timings_lin_exact_hessian_qp = np.zeros((np_test))
     timings_solve_params_adj = np.zeros((np_test))
     timings_parameter_update = np.zeros((np_test))
-    if with_more_adjoints:
-        timings_solve_params_adj_all_primals = np.zeros((np_test))
+    if with_u_forw_via_adjoints:
         timings_solve_params_adj_uforw = np.zeros((np_test))
 
         # seed for forward sensitivities of u_0
         seed_u_u0 = [(0, np.eye(nu))]
         seed_x_u0 = [(0, np.zeros((nx, nu)))]
+
+    if with_forw_via_adjoints:
+        timings_solve_params_adj_all_primals = np.zeros((np_test))
 
         # seed for forward sensitivities of all primals
         N_horizon = ocp.solver_options.N_horizon
@@ -442,9 +416,6 @@ def main_parametric(args, qp_solver_ric_alg: int = 0,
                 seed_ustage[ii][j, j+offset] = 1
         zip_stages_x = list(zip(stages_x, seed_xstage))
         zip_stages_u = list(zip(stages_u, seed_ustage))
-    else:
-        timings_solve_params_adj_all_primals = None
-        timings_solve_params_adj_uforw = None
 
     seed_x = np.ones((nx, 1))
     seed_u = np.ones((nu, 1))
@@ -469,8 +440,8 @@ def main_parametric(args, qp_solver_ric_alg: int = 0,
         t_start = time.time()
 
         # using AcadosOcpFlatIterate
-        iterate = ocp_solver.store_iterate_to_flat_obj()
-        sensitivity_solver.load_iterate_from_flat_obj(iterate)
+        iterate = ocp_solver.get_flat_iterate()
+        sensitivity_solver.set_iterate(iterate)
 
         timings_store_load[i] = time.time() - t_start
 
@@ -484,12 +455,17 @@ def main_parametric(args, qp_solver_ric_alg: int = 0,
         out_dict = sensitivity_solver.eval_solution_sensitivity(0, "p_global")
         sens_x_ = out_dict['sens_x']
         sens_u_ = out_dict['sens_u']
-        timings_lin_params[i] = sensitivity_solver.get_stats("time_solution_sens_lin")
-        timings_solve_params[i] = sensitivity_solver.get_stats("time_solution_sens_solve")
+        timings_solve_params[i] = (
+            sensitivity_solver.get_stats("time_solution_sens_solve")
+            + sensitivity_solver.get_stats("time_solution_sens_lin")
+        )
 
         # Calculate adjoint sensitivities
         sens_adj = sensitivity_solver.eval_adjoint_solution_sensitivity(seed_x=[(0, seed_x)], seed_u=[(0, seed_u)])
-        timings_solve_params_adj[i] = sensitivity_solver.get_stats("time_solution_sens_solve")
+        timings_solve_params_adj[i] = (
+            sensitivity_solver.get_stats("time_solution_sens_solve")
+            + sensitivity_solver.get_stats("time_solution_sens_lin")
+        )
 
         sens_adj_ref = seed_u.T @ sens_u_ + seed_x.T @ sens_x_
 
@@ -498,16 +474,15 @@ def main_parametric(args, qp_solver_ric_alg: int = 0,
 
         sens_u.append(sens_u_[:, p_idx])
 
-        if with_more_adjoints:
+        if with_forw_via_adjoints:
             # Calculate forward sensitivities of primals via adjoint sensitivities
             sens_adj = sensitivity_solver.eval_adjoint_solution_sensitivity(seed_x=zip_stages_x, seed_u=zip_stages_u)
             timings_solve_params_adj_all_primals[i] = sensitivity_solver.get_stats("time_solution_sens_solve")
 
+        if with_u_forw_via_adjoints:
             # solution sensitivities of all u_0 entries
             sens_adj = sensitivity_solver.eval_adjoint_solution_sensitivity(seed_u=seed_u_u0, seed_x=seed_x_u0)
             timings_solve_params_adj_uforw[i] = sensitivity_solver.get_stats("time_solution_sens_solve")
-
-            print(f"i {i} {timings_solve_params_adj[i]*1e3:.5f} \t {timings_solve_params[i]*1e3:.5f} \t {timings_solve_params_adj_uforw[i]*1e3:.5f} \t {timings_solve_params_adj_all_primals[i]*1e3:.5f}")
 
             # check wrt forward
             assert np.allclose(sens_adj, out_dict['sens_u'])
@@ -518,14 +493,13 @@ def main_parametric(args, qp_solver_ric_alg: int = 0,
         "parameter update": timings_parameter_update * 1e3,
         "setup exact Lagrange Hessian (S2)": timings_lin_exact_hessian_qp * 1e3,
         "factorize exact Lagrange Hessian (S3)": timings_lin_and_factorize * 1e3,
-        r"evaluate $J_\star$ (S4)": timings_lin_params * 1e3,
     }
     timing_results_forward = timings_common.copy()
     timing_results_adjoint = timings_common.copy()
     timing_results_adj_uforw = timings_common.copy()
     timing_results_adj_all_primals = timings_common.copy()
 
-    backsolve_label = "sensitivity solve given factorization (S5)"
+    backsolve_label = "sensitivity solve (S4) + (S5)"
     timing_results_forward[backsolve_label] = timings_solve_params * 1e3
     timing_results_adjoint[backsolve_label] = timings_solve_params_adj * 1e3
 
@@ -535,14 +509,21 @@ def main_parametric(args, qp_solver_ric_alg: int = 0,
     else:
         labels = [r'$\frac{\partial w^\star}{\partial \theta}$ via forward', r'$\nu^\top \frac{\partial w^\star}{\partial \theta}$ via adjoint']
 
-    if with_more_adjoints:
+    if with_u_forw_via_adjoints:
         timing_results_adj_uforw[backsolve_label] = timings_solve_params_adj_uforw * 1e3
-        timing_results_adj_all_primals[backsolve_label] = timings_solve_params_adj_all_primals * 1e3
-        timings_list += [timing_results_adj_uforw, timing_results_adj_all_primals]
+        timings_list += [timing_results_adj_uforw]
         if large_fractions:
-            labels += [r'$\frac{\displaystyle\partial u_0^\star}{\displaystyle\partial \theta}$ via adjoints', r'$\frac{\displaystyle\partial z^\star}{\displaystyle\partial \theta} $ via adjoints']
+            labels += [r'$\frac{\displaystyle\partial u_0^\star}{\displaystyle\partial \theta}$ via adjoints']
         else:
-            labels += [r'$\frac{\partial u_0^\star}{\partial \theta}$ via adjoints', r'$\frac{\partial z^\star}{\partial \theta} $ via adjoints']
+            labels += [r'$\frac{\partial u_0^\star}{\partial \theta}$ via adjoints']
+
+    if with_forw_via_adjoints:
+        timing_results_adj_all_primals[backsolve_label] = timings_solve_params_adj_all_primals * 1e3
+        timings_list += [timing_results_adj_all_primals]
+        if large_fractions:
+            labels += [r'$\frac{\displaystyle\partial z^\star}{\displaystyle\partial \theta} $ via adjoints']
+        else:
+            labels += [r'$\frac{\partial z^\star}{\partial \theta} $ via adjoints']
 
 
     print_timings(timing_results_forward, metric="median")
@@ -627,9 +608,9 @@ def load_results_plot_timings(
         loaded_timing_data["timings_list"],
         loaded_timing_data["labels"],
         figure_filename=figure_filename,
-        t_max=10,
+        t_max=6,
         horizontal=True,
-        figsize=(6.6, 3.),
+        figsize=(12, 3.3),
         with_patterns=True,
         ncol=1,
     )
@@ -662,5 +643,5 @@ if __name__ == "__main__":
 
     chain_params = get_chain_params()
     chain_params["n_mass"] = 3
-    # main_parametric(args, qp_solver_ric_alg=0, chain_params_=chain_params, generate_code=True)
+    main_parametric(args, qp_solver_ric_alg=0, chain_params_=chain_params, generate_code=True)
     load_results_plot_timings(args)
