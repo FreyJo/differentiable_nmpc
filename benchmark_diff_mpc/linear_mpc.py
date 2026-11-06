@@ -615,11 +615,6 @@ def control_bounded_lqr_solve_timings(problem: ControlBoundedLqrProblem, x0, wit
         print(f"cvxpy (gen + layer): {timing_cvxpy=}")
 
 
-
-PROBLEM_CONFIGS = [(1e4, 8, 4, 20, 1e-6, "one"),
-                   (1e0, 8, 4, 20, 1e-6, "two"),
-                   #(1e4, 8, 4, "84")
-                   ]
 N_BATCH_EXPERIMENT = 2**7
 
 BIG_PROBLEM_CONFIGS = [
@@ -655,189 +650,8 @@ def speedup_formatter(timing, baseline):
     string = f"$\\times{string}$"
     return string
 
+
 def evaluate_experiment_latex(cuda: bool = False):
-    n_batch = N_BATCH_EXPERIMENT
-    configs = PROBLEM_CONFIGS
-
-    nx_vals = [c[1] for c in configs]
-    nu_vals = [c[2] for c in configs]
-    nxu_varies = len(set(nx_vals)) != 1 or len(set(nu_vals)) != 1
-
-    table_string = r"\begin{table*}"
-    table_string += "\n\centering\n"
-    table_string += "\caption{Timings in [ms] for solving $n_{\mathrm{batch}} \!=\! " + f"{n_batch}$ bounded LQR problems with $N \!=\! 20$"
-    if not nxu_varies:
-        nx = configs[0][1]
-        nu = configs[0][2]
-        table_string += f", $n_x \!=\! {nx}$, $n_u \!=\! {nu}$, $n_\\theta" + f" \!= \!{nx*(nx+nu+1)+(nx+nu)**2}$"
-    table_string += r". In parentheses are multiples of the \acados{} runtime."
-
-    table_string += r"\label{tab:mcp_pytorch}" + "\n"
-    table_string += "}\n"
-    table_string += "\\vspace{-1.5mm}\n"
-    table_string += "\\footnotesize\n"
-    table_string += r"\begin{tabular}{ccccccc}" + "\n"
-    table_string += r"\toprule" + "\n"
-    table_string += r"& \multicolumn{3}{c}{\textbf{Nominal solution}} & \multicolumn{3}{c}{\textbf{Solution + adjoint sens.}}\\" + "\n"
-    table_string += r"$u_{\mathrm{max}}$ & \acados & \texttt{mpc.pytorch} & \texttt{cvxpygen}"
-    table_string += r"& \acados & \texttt{mpc.pytorch} & \texttt{cvxpygen}"
-    table_string += "\\\\\n"
-    table_string += r"\midrule" + "\n"
-
-    for umax, nx, nu, N_horizon, tol, _ in configs:
-        # timings solve
-        results_acados = load_results_maybe("acados", umax, nx, nu, n_batch, N_horizon, tol, sensitivity=False)
-        if not cuda:
-            results_mpytorch = load_results_maybe("mpc_pytorch", umax, nx, nu, n_batch, N_horizon, tol, sensitivity=False)
-            results_cpgen = load_results_maybe("cvxpy", umax, nx, nu, n_batch, N_horizon, tol, sensitivity=False)
-        else:
-            results_mpytorch = load_results_maybe("mpc_pytorch_cuda", umax, nx, nu, n_batch, N_horizon, tol, sensitivity=False)
-            results_cpgen = load_results_maybe("cvxpy_cuda", umax, nx, nu, n_batch, N_horizon, tol, sensitivity=False)
-        timing_ac = results_acados['timing']
-        timing_mpytorch = results_mpytorch['timing']
-        timing_cpgen = results_cpgen['timing']
-        table_string += "$"
-        if umax == 1e4:
-            table_string += r"10^4"
-        else:
-            table_string += f"{umax}"
-        table_string += "$"
-        if nxu_varies:
-            table_string += f", $n_x = {nx}$, $n_u= {nu}$"
-        table_string += f"& {timing_ac*1e3:.1f} & ${int(timing_mpytorch*1e3)} \;\,$ ({speedup_formatter(timing_mpytorch, timing_ac)}) & ${int(timing_cpgen*1e3)} \;\,$ ({speedup_formatter(timing_cpgen, timing_ac)})"
-
-        # timings sensitivity
-        results_acados = load_results_maybe("acados", umax, nx, nu, n_batch, N_horizon, tol, sensitivity=True)
-        timing_ac = results_acados['timing']
-        if not cuda:
-            results_mpytorch = load_results_maybe("mpc_pytorch", umax, nx, nu, n_batch, N_horizon, tol, sensitivity=True)
-            results_cpgen = load_results_maybe("cvxpy", umax, nx, nu, n_batch, N_horizon, tol, sensitivity=True)
-        else:
-            results_mpytorch = load_results_maybe("mpc_pytorch_cuda", umax, nx, nu, n_batch, N_horizon, tol, sensitivity=True)
-            results_cpgen = load_results_maybe("cvxpy_cuda", umax, nx, nu, n_batch, N_horizon, tol, sensitivity=True)
-
-        timing_cpgen = results_cpgen['timing']
-        timing_mpytorch = results_mpytorch['timing']
-        # table_string += f"& {timing_ac*1e3:.1f} & {speedup_formatter(timing_mpytorch, timing_ac)} & {speedup_formatter(timing_cpgen, timing_ac)}"
-        table_string += f"& {timing_ac*1e3:.1f} & ${int(timing_mpytorch*1e3)} \;\,$ ({speedup_formatter(timing_mpytorch, timing_ac)}) & ${int(timing_cpgen*1e3)} \;\,$ ({speedup_formatter(timing_cpgen, timing_ac)})"
-
-
-        table_string += "\\\\\n"
-
-    table_string += r"\bottomrule" + "\n"
-    table_string += r"\end{tabular}" + "\n"
-    table_string += r"\vspace{-2mm}" + "\n"
-    table_string += r"\end{table*}" + "\n"
-
-    print(table_string)
-    name = "results_table.tex" if not cuda else "results_table_cuda.tex"
-    with open(name, "w") as f:
-        f.write(table_string)
-        print(f"Written to {name}")
-
-
-def evaluate_experiment_markdown(cuda: bool = False):
-    """
-    Evaluates the experiment and generates a results table in Markdown format.
-    """
-    n_batch = N_BATCH_EXPERIMENT
-    configs = PROBLEM_CONFIGS
-
-    nx_vals = [c[1] for c in configs]
-    nu_vals = [c[2] for c in configs]
-    nxu_varies = len(set(nx_vals)) != 1 or len(set(nu_vals)) != 1
-
-    table_string = ""
-
-    # --- Generate caption ---
-    caption_base = f"Timings for solving $n_{{\mathrm{{batch}}}} = {n_batch}$ bounded LQR problems with $N = 20$"
-    if not nxu_varies:
-        nx = configs[0][1]
-        nu = configs[0][2]
-        n_theta = nx * (nx + nu + 1) + (nx + nu)**2
-        caption_base += f", $n_x = {nx}$, $n_u = {nu}$, $n_\\theta = {n_theta}$"
-    caption_base += ". In parentheses are multiples of the `acados` runtime."
-    table_string += f"**Table:** {caption_base}\n\n" # Add caption as bold text
-
-    # --- Generate Table Header ---
-    table_string += "| $u_{\mathrm{max}}$ | `acados` (Nominal) | `mpc.pytorch` (Nominal) | `cvxpygen` (Nominal) | `acados` (Nominal + Adjoint Sens.) | `mpc.pytorch` (Nominal + Adjoint Sens.) | `cvxpygen` (Nominal + Adjoint Sens.) |\n"
-    table_string += "|---------------|------------------|-----------------------|-------------------|-------------------------|--------------------------|-------------------------|\n"
-
-    # --- Generate Table Rows ---
-    for umax, nx, nu, N_horizon, tol, _ in configs:
-        row_parts = []
-
-        # --- Config Column ---
-        config_str = "$"
-        if umax == 1e4:
-            config_str += r"10^4"
-        else:
-            config_str += f"{umax:.1f}" if isinstance(umax, float) else f"{umax}" # Format float umax
-        config_str += "$"
-        if nxu_varies:
-            config_str += f", $n_x = {nx}$, $n_u = {nu}$"
-
-        row_parts.append(config_str)
-
-        # --- Timings: nominal solution ---
-        results_acados_nom = load_results_maybe("acados", umax, nx, nu, n_batch, N_horizon, tol, sensitivity=False)
-        if not cuda:
-            results_mpytorch_nom = load_results_maybe("mpc_pytorch", umax, nx, nu, n_batch, N_horizon, tol, sensitivity=False)
-            results_cpgen_nom = load_results_maybe("cvxpy", umax, nx, nu, n_batch, N_horizon, tol, sensitivity=False)
-        else:
-            results_mpytorch_nom = load_results_maybe("mpc_pytorch_cuda", umax, nx, nu, n_batch, N_horizon, tol, sensitivity=False)
-            results_cpgen_nom = load_results_maybe("cvxpy_cuda", umax, nx, nu, n_batch, N_horizon, tol, sensitivity=False)
-
-        timing_ac_nom = results_acados_nom['timing'] if results_acados_nom else float('nan')
-        timing_mpytorch_nom = results_mpytorch_nom['timing'] if results_mpytorch_nom else float('nan')
-        timing_cpgen_nom = results_cpgen_nom['timing'] if results_cpgen_nom else float('nan')
-
-        speedup_mpytorch_nom = timing_mpytorch_nom / timing_ac_nom
-        speedup_cpgen_nom = timing_cpgen_nom / timing_ac_nom
-
-        row_parts.extend([f"{int(timing_ac_nom*1e3)}" if not math.isnan(timing_ac_nom) else "-",
-                          f"{int(timing_mpytorch_nom*1e3)} ({speedup_formatter(timing_mpytorch_nom, timing_ac_nom)})" if not math.isnan(speedup_mpytorch_nom) else "-",
-                          f"{int(timing_cpgen_nom*1e3)} ({speedup_formatter(timing_cpgen_nom, timing_ac_nom)})" if not math.isnan(speedup_cpgen_nom) else "-"])
-
-
-        # --- Timings: solution + adjoint sensitivity ---
-        results_acados_sens = load_results_maybe("acados", umax, nx, nu, n_batch, N_horizon, tol, sensitivity=True)
-        if not cuda:
-            results_mpytorch_sens = load_results_maybe("mpc_pytorch", umax, nx, nu, n_batch, N_horizon, tol, sensitivity=True)
-            results_cpgen_sens = load_results_maybe("cvxpy", umax, nx, nu, n_batch, N_horizon, tol, sensitivity=True)
-        else:
-            results_mpytorch_sens = load_results_maybe("mpc_pytorch_cuda", umax, nx, nu, n_batch, N_horizon, tol, sensitivity=True)
-            results_cpgen_sens = load_results_maybe("cvxpy_cuda", umax, nx, nu, n_batch, N_horizon, tol, sensitivity=True)
-        timing_ac_sens = results_acados_sens['timing'] if results_acados_sens else float('nan')
-        timing_mpytorch_sens = results_mpytorch_sens['timing'] if results_mpytorch_sens else float('nan')
-        timing_cpgen_sens = results_cpgen_sens['timing'] if results_cpgen_sens else float('nan')
-
-        print("\nTimings for umax =", umax)
-        print(f"Nominal: timings in ms: acados: {timing_ac_nom*1e3:.2f}, mpc.pytorch: {timing_mpytorch_nom*1e3:.2f}, cvxpygen: {timing_cpgen_nom*1e3:.2f}")
-        print(f"Sensitivity: timings in ms: acados: {timing_ac_sens*1e3:.2f}, mpc.pytorch: {timing_mpytorch_sens*1e3:.2f}, cvxpygen: {timing_cpgen_sens*1e3:.2f}")
-
-        # Speedup calculation: mpc.pytorch / acados
-        speedup_mpytorch_sens = timing_mpytorch_sens / timing_ac_sens
-        speedup_cpgen_sens = timing_cpgen_sens / timing_ac_sens
-
-        row_parts.extend([f"{int(timing_ac_sens*1e3)}" if not math.isnan(timing_ac_sens) else "-",
-                          f"{int(timing_mpytorch_sens*1e3)} ({speedup_formatter(timing_mpytorch_sens, timing_ac_sens)})" if not math.isnan(speedup_mpytorch_sens) else "-",
-                          f"{int(timing_cpgen_sens*1e3)} ({speedup_formatter(timing_cpgen_sens, timing_ac_sens)})" if not math.isnan(speedup_cpgen_sens) else "-"])
-
-
-        # --- Append Row to Table String ---
-        table_string += "| " + " | ".join(row_parts) + " |\n"
-
-    # --- No Footer needed for Markdown ---
-
-    # --- Write to File ---
-    name = "results_table.md" if not cuda else "results_table_cuda.md"
-    with open(name, "w") as f:
-        f.write(table_string)
-        print(f"Written to {name}")
-
-
-def evaluate_experiment_latex_big(cuda: bool = False):
     n_batch = N_BATCH_EXPERIMENT
     configs = RUN_CONFIGS
 
@@ -926,13 +740,13 @@ def evaluate_experiment_latex_big(cuda: bool = False):
     table_string += r"\end{table*}" + "\n"
 
     print(table_string)
-    name = "results_table_big.tex" if not cuda else "results_table_big_cuda.tex"
+    name = "results_table.tex" if not cuda else "results_table_cuda.tex"
     with open(name, "w") as f:
         f.write(table_string)
         print(f"Written to {name}")
 
 
-def evaluate_experiment_markdown_big(cuda: bool = False):
+def evaluate_experiment_markdown(cuda: bool = False):
     """
     Evaluates the experiment with varying N_horizon, tolerance, and dimensions
     and generates a results table in Markdown format.
@@ -1026,7 +840,7 @@ def evaluate_experiment_markdown_big(cuda: bool = False):
         table_string += "| " + " | ".join(row_parts) + " |\n"
 
     # --- Write to File ---
-    name = "results_table_big.md" if not cuda else "results_table_big_cuda.md"
+    name = "results_table.md" if not cuda else "results_table_cuda.md"
     with open(name, "w") as f:
         f.write(table_string)
         print(f"Written to {name}")
@@ -1094,14 +908,11 @@ if __name__ == "__main__":
     cuda = False
 
     # experiments
-    main_experiment(with_acados=True, with_mpc_pytorch=True, with_mpc_pytorch_cuda=cuda, with_cvxpy=True, with_cvxpy_cuda=cuda, num_threads=num_threads, n_exec=5)
+    # main_experiment(with_acados=True, with_mpc_pytorch=True, with_mpc_pytorch_cuda=cuda, with_cvxpy=True, with_cvxpy_cuda=cuda, num_threads=num_threads, n_exec=5)
 
     # Use this to generate the desired LaTeX tables out of the experiment data
-    # evaluate_experiment_latex(cuda=cuda)
-    # evaluate_experiment_markdown(cuda=cuda)
-
-    evaluate_experiment_latex_big(cuda=cuda)
-    evaluate_experiment_markdown_big(cuda=cuda)
+    evaluate_experiment_latex(cuda=cuda)
+    evaluate_experiment_markdown(cuda=cuda)
 
     analyze_constraint_activeness_in_results(RUN_CONFIGS[0])
     analyze_constraint_activeness_in_results(RUN_CONFIGS[1])
