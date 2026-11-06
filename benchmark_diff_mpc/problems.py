@@ -30,6 +30,7 @@ class ControlBoundedLqrProblem:
     cost: QuadraticCost
     control_bounds: ControlBounds
     N_horizon: int
+    tol: float
 
     def __post_init__(self):
         self.nx, self.nu = self.dynamics.A.shape[0], self.dynamics.B.shape[1]
