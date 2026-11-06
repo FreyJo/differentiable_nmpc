@@ -5,7 +5,8 @@ The proposed algorithms are implemented in the [`acados`](https://github.com/aca
 
 **Abstract**: The efficient computation of parametric solution sensitivities is a key challenge in the integration of learning-based methods with nonlinear model predictive control (NMPC), as their availability is crucial for many learning algorithms.
 While approaches presented in the machine learning community are limited to convex or unconstrained formulations, this paper discusses the computation of solution sensitivities of general nonlinear programs (NLPs) using the implicit function theorem (IFT) and smoothed optimality conditions treated in interior point methods (IPM).
-We detail sensitivity computation within a sequential quadratic programming (SQP) method which employs an IPM for the quadratic subproblems.
+We introduce sequential barrier quadratic programming (SBQP), which generalizes SQP with an IPM quadratic programming (QP) solver by allowing the barrier parameter to approach a prescribed nonnegative target value, recovering classical SQP when this target is zero.
+Previous works are limited to convex or unconstrained formulations, or lack an implementation for efficient sensitivity evaluation.
 The publication is accompanied by an efficient open-source implementation within the $\texttt{acados}$ framework, providing both forward and adjoint sensitivities for general optimal control problems, achieving speedups exceeding 3x over the state-of-the-art solver $\texttt{mpc.pytorch}$.
 
 **Visualization:** Figure 2 of the paper, visualizing the optimization landscape at active set changes of the solution map of an optimal control problem (OCP) as solved in the context of NMPC:
